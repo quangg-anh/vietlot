@@ -1,0 +1,7 @@
+{$SITE_ADDRESS:http://localhost} {
+    encode zstd gzip
+    request_body {
+        max_size 11MB
+    }
+    reverse_proxy app:8000
+}

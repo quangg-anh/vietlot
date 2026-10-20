@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>API · Vietlott Research Lab</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main class="api-docs"><div class="topline"><a href="/">← Về dashboard</a><a href="/openapi.json">OpenAPI JSON ↗</a></div><header><div><p class="eyebrow">V/LAB · API REFERENCE</p><h1>Dữ liệu có kiểm chứng.</h1><p class="subtitle">Các thao tác POST cần header X-API-Key. Kiểm tra schema và payload đầy đủ trong OpenAPI JSON.</p></div></header><div class="notice">Nghiên cứu xác suất, không đảm bảo trúng thưởng hay lợi nhuận.</div><section class="panel"><h2>Endpoints</h2><div class="table-scroll"><table><thead><tr><th>Method</th><th>Path</th><th>Operation</th></tr></thead><tbody>{% for path, method, operation in operations %}<tr><td>{{ method }}</td><td><code>{{ path }}</code></td><td>{{ operation.summary }}</td></tr>{% endfor %}</tbody></table></div></section><p class="footnote">Tài liệu tự phục vụ, không tải JavaScript từ CDN. Các tính năng chưa đủ điều kiện sẽ trả lỗi thay vì giả lập kết quả.</p></main></body>
+</html>

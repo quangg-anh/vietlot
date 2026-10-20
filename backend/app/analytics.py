@@ -1,83 +1,107 @@
-from itertools import combinations
-import numpy as np
+import math
+import random
+from statistics import mean
 
-N = 55
-K = 6
 
-def draw_matrix(rows):
-    return np.array([[getattr(r, f"n{i}") for i in range(1, 7)] for r in rows], dtype=int)
+DISCLAIMER = "Nghien cuu xac suat, khong dam bao trung thuong hay loi nhuan."
+METHODS = {"uniform", "bayesian"}
 
-def number_scores(history, method="bayesian"):
-    # Scores are ranking heuristics, not calibrated winning probabilities.
-    if method == "uniform" or len(history) == 0:
-        return np.ones(N, dtype=float) / N
-    matrix = draw_matrix(history)
-    counts = np.bincount(matrix.ravel(), minlength=N + 1)[1:N + 1].astype(float)
-    if method == "bayesian":
-        # Symmetric Dirichlet smoothing. Expected frequency remains uniform absent evidence.
-        alpha = 10.0
-        return (counts + alpha * K / N) / (len(history) * K + alpha * K)
-    if method == "xgboost":
-        return xgb_scores(matrix)
-    raise ValueError("Unknown method")
 
-def xgb_scores(matrix):
-    try:
-        from xgboost import XGBClassifier
-    except Exception as exc:
-        raise RuntimeError("XGBoost unavailable") from exc
-    if len(matrix) < 80:
-        raise ValueError("Need at least 80 draws for XGBoost experiment")
-    X, y = [], []
-    for t in range(20, len(matrix)):
-        prior = matrix[:t]
-        counts = np.bincount(prior.ravel(), minlength=56)[1:]
-        # Each training row is a number-level example for the next draw.
-        present = set(matrix[t].tolist())
-        for num in range(1, 56):
-            X.append([num / 55.0, counts[num-1], t, counts[num-1] / (t * 6)])
-            y.append(int(num in present))
-    model = XGBClassifier(n_estimators=100, max_depth=2, learning_rate=0.03,
-                          subsample=0.8, colsample_bytree=0.8, eval_metric="logloss",
-                          random_state=42, n_jobs=2)
-    model.fit(np.asarray(X), np.asarray(y))
-    t = len(matrix)
-    counts = np.bincount(matrix.ravel(), minlength=56)[1:]
-    X_next = np.array([[num / 55.0, counts[num-1], t, counts[num-1] / (t * 6)]
-                       for num in range(1, 56)])
-    return model.predict_proba(X_next)[:, 1]
+def probabilities(history, spec, method="bayesian"):
+    if method not in METHODS:
+        raise ValueError("method must be uniform or bayesian")
+    if spec["kind"] != "pick_k":
+        raise ValueError("Candidate models currently support pick_k games only")
+    size, count = spec["number_max"], spec["pick_count"]
+    counts = [0] * size
+    window = history[-300:]
+    for row in window:
+        for number in row["main"]:
+            counts[number - 1] += 1
+    strength = 100
+    if method == "uniform" or not window:
+        return [count / size] * size
+    return [(hits + strength * count / size) / (len(window) + strength) for hits in counts]
 
-def candidate_sets(scores, count=5, seed=42):
-    # Weighted sampling without replacement. This creates candidate sets, not true odds.
-    rng = np.random.default_rng(seed)
-    weights = np.maximum(np.asarray(scores, dtype=float), 1e-12)
-    weights = weights / weights.sum()
-    out = []
-    for _ in range(max(1, min(count, 100))):
-        picks = rng.choice(np.arange(1, N+1), size=K, replace=False, p=weights)
-        out.append(sorted(int(x) for x in picks))
-    return out
 
-def backtest(rows, min_train=100, test_draws=100, method="bayesian"):
-    rows = sorted(rows, key=lambda r: (r.draw_date, r.draw_id))
+def sample_tickets(probability, spec, count, seed):
+    generator = random.Random(seed)
+    tickets = []
+    for _ in range(count):
+        pool = list(range(1, spec["number_max"] + 1))
+        chosen = []
+        for _ in range(spec["pick_count"]):
+            number = generator.choices(pool, weights=[probability[item - 1] for item in pool])[0]
+            chosen.append(number)
+            pool.remove(number)
+        special = None
+        if spec.get("special_max"):
+            choices = list(range(1, spec["special_max"] + 1))
+            if spec.get("special_excludes_main"):
+                choices = [number for number in choices if number not in chosen]
+            special = generator.choice(choices)
+        tickets.append({"main": sorted(chosen), "special": special})
+    return tickets
+
+
+def losses(probability, actual):
+    observed = set(actual)
+    brier, logloss = 0.0, 0.0
+    residuals = []
+    for number, value in enumerate(probability, 1):
+        outcome = int(number in observed)
+        bounded = min(max(value, 1e-12), 1 - 1e-12)
+        residuals.append(outcome - value)
+        brier += (value - outcome) ** 2
+        logloss -= outcome * math.log(bounded) + (1 - outcome) * math.log1p(-bounded)
+    return {"brier": brier / len(probability), "logloss": logloss / len(probability), "residuals": residuals}
+
+
+def backtest(rows, spec, min_train=100, test_draws=100, method="bayesian", seed=42):
     if len(rows) <= min_train:
-        raise ValueError(f"Need more than min_train={min_train} draws; found {len(rows)}")
+        raise ValueError(f"Need more than {min_train} verified draws; found {len(rows)}")
     start = max(min_train, len(rows) - test_draws)
-    results = []
-    for t in range(start, len(rows)):
-        train, actual = rows[:t], {getattr(rows[t], f"n{i}") for i in range(1, 7)}
-        scores = number_scores(train, method)
-        ranked = np.argsort(scores)[-K:] + 1
-        hits = len(set(int(x) for x in ranked) & actual)
-        results.append({"draw_id": rows[t].draw_id, "draw_date": str(rows[t].draw_date),
-                        "hits": hits, "baseline_expected_hits": K*K/N})
-    hits = np.array([r["hits"] for r in results], dtype=float)
-    return {
-        "method": method, "evaluated_draws": len(results),
-        "mean_hits": float(hits.mean()),
-        "random_expected_mean_hits": K*K/N,
-        "hit_difference": float(hits.mean() - K*K/N),
-        "hit_histogram": {str(i): int(np.sum(hits == i)) for i in range(7)},
-        "warning": "Exploratory backtest only. No confidence claim; model selection and multiple testing can inflate results.",
-        "per_draw": results
-    }
+    per_draw = []
+    for index in range(start, len(rows)):
+        history, actual = rows[:index], rows[index]
+        probability = probabilities(history, spec, method)
+        model = sample_tickets(probability, spec, 1, seed + index)[0]["main"]
+        baseline = sample_tickets(probabilities([], spec, "uniform"), spec, 1, seed + 100000 + index)[0]["main"]
+        metrics = losses(probability, actual["main"])
+        control = losses(probabilities([], spec, "uniform"), actual["main"])
+        per_draw.append({"draw_id": actual["draw_id"], "hits": len(set(model) & set(actual["main"])),
+                         "baseline_hits": len(set(baseline) & set(actual["main"])),
+                         "brier": metrics["brier"], "baseline_brier": control["brier"],
+                         "logloss": metrics["logloss"], "baseline_logloss": control["logloss"]})
+    generator = random.Random(seed)
+    differences = [entry["hits"] - entry["baseline_hits"] for entry in per_draw]
+    bootstrap = sorted(mean(generator.choices(differences, k=len(differences))) for _ in range(1000))
+    return {"method": method, "evaluated_draws": len(per_draw), "seed": seed,
+            "mean_hits": mean(entry["hits"] for entry in per_draw),
+            "baseline_mean_hits": mean(entry["baseline_hits"] for entry in per_draw),
+            "random_expected_mean_hits": spec["pick_count"] ** 2 / spec["number_max"],
+            "paired_difference_ci95": [bootstrap[24], bootstrap[974]],
+            "brier": mean(entry["brier"] for entry in per_draw),
+            "baseline_brier": mean(entry["baseline_brier"] for entry in per_draw),
+            "logloss": mean(entry["logloss"] for entry in per_draw),
+            "baseline_logloss": mean(entry["baseline_logloss"] for entry in per_draw),
+            "conclusion": "Chua du bang chung vuot baseline ngau nhien",
+            "holdout": False, "exploratory": True,
+            "limitations": "No untouched holdout or multiple-trial correction; CI is exploratory, not an edge claim.",
+            "per_draw": per_draw, "disclaimer": DISCLAIMER}
+
+
+def frequency(rows, spec):
+    if spec["kind"] != "pick_k":
+        counts = {}
+        for row in rows:
+            for values in row["digits"].values():
+                for value in values:
+                    counts[value] = counts.get(value, 0) + 1
+        return [{"number": number, "count": count} for number, count in sorted(counts.items())]
+    result = []
+    for number in range(1, spec["number_max"] + 1):
+        positions = [index for index, row in enumerate(rows) if number in row["main"]]
+        result.append({"number": number, "count": len(positions),
+                       "gap": len(rows) - 1 - positions[-1] if positions else None})
+    return result

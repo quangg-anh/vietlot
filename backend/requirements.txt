@@ -1,13 +1,6 @@
 fastapi==0.115.12
 uvicorn[standard]==0.34.0
-SQLAlchemy==2.0.38
-psycopg[binary]==3.2.5
 pydantic==2.10.6
 python-multipart==0.0.20
-requests==2.32.3
-beautifulsoup4==4.13.3
-redis==5.2.1
-numpy==2.2.3
-pandas==2.2.3
-scikit-learn==1.6.1
-xgboost==2.1.4
+Jinja2==3.1.6
+tzdata==2025.2

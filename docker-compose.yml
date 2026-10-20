@@ -1,59 +1,53 @@
 services:
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-power655}
-      POSTGRES_USER: ${POSTGRES_USER:-power655}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    restart: unless-stopped
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redisdata:/data
-    restart: unless-stopped
-  api:
+  app:
     build: ./backend
-    env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_started }
+      API_KEY: ${API_KEY:?Set a strong API_KEY in .env}
+      DATABASE_PATH: /app/data/research.sqlite3
+    volumes:
+      - research_data:/app/data
     ports:
       - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 15s
+    init: true
+    stop_grace_period: 60s
     restart: unless-stopped
-  worker:
-    build: ./backend
-    command: ["python", "-m", "app.worker"]
-    env_file: .env
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  caddy:
+    image: caddy:2-alpine
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_started }
-    restart: unless-stopped
-  web:
-    build:
-      context: ./frontend
-      args:
-        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-/api}
-    environment:
-      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-/api}
-    depends_on:
-      - api
+      SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost}
     ports:
-      - "127.0.0.1:3000:3000"
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 volumes:
-  pgdata:
-  redisdata:
+  research_data:
+  caddy_data:
+  caddy_config:

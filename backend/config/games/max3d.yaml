@@ -1,0 +1,33 @@
+{
+  "code": "max3d",
+  "name": "Max 3D",
+  "kind": "digits",
+  "number_min": 1,
+  "number_max": null,
+  "pick_count": null,
+  "special_max": null,
+  "special_excludes_main": false,
+  "special_required": false,
+  "timezone": "Asia/Ho_Chi_Minh",
+  "weekdays": [
+    0,
+    2,
+    4
+  ],
+  "slots": [
+    "18:00"
+  ],
+  "ticket_price": null,
+  "prizes": {},
+  "digit_groups": {},
+  "rules_verified": false,
+  "rules_verified_at": null,
+  "rules_source_url": null,
+  "import_enabled": false,
+  "status": "draft: official rules and schedule require operator review",
+  "sources": {
+    "primary": "https://vietlott.vn",
+    "secondary": null
+  },
+  "crawl_enabled": false
+}

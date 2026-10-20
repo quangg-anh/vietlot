@@ -1,0 +1,38 @@
+{
+  "code": "lotto535",
+  "name": "Lotto 5/35",
+  "kind": "pick_k",
+  "number_min": 1,
+  "number_max": 35,
+  "pick_count": 5,
+  "special_max": null,
+  "special_excludes_main": false,
+  "special_required": true,
+  "timezone": "Asia/Ho_Chi_Minh",
+  "weekdays": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "slots": [
+    "13:00",
+    "21:00"
+  ],
+  "ticket_price": null,
+  "prizes": {},
+  "digit_groups": {},
+  "rules_verified": false,
+  "rules_verified_at": null,
+  "rules_source_url": null,
+  "import_enabled": false,
+  "status": "draft: official rules and schedule require operator review",
+  "sources": {
+    "primary": "https://vietlott.vn",
+    "secondary": null
+  },
+  "crawl_enabled": false
+}

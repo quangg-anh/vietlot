@@ -1,17 +1,40 @@
+import json
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dev.db")
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-class Base(DeclarativeBase):
-    pass
+def database_path():
+    return Path(os.getenv("DATABASE_PATH", "data/research.sqlite3"))
 
-def get_db():
-    db = SessionLocal()
+
+@contextmanager
+def connect():
+    path = database_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=30000")
     try:
-        yield db
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
     finally:
-        db.close()
+        connection.close()
+
+
+def initialize():
+    with connect() as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        if connection.execute("PRAGMA user_version").fetchone()[0] > 1:
+            raise RuntimeError("Database schema newer than application")
+        connection.executescript(Path(__file__).with_name("schema.sql").read_text())
+        connection.execute("PRAGMA user_version=1")
+
+
+def encode(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)

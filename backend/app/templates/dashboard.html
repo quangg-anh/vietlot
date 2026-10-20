@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Phòng nghiên cứu dữ liệu Vietlott. Kiểm định minh bạch, không cam kết trúng thưởng.">
+  <title>{{ selected.name }} · Vietlott Research Lab</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body data-game="{{ selected.code }}">
+  <aside class="sidebar">
+    <a class="brand" href="/">V<span>/</span>LAB<small>VIETLOTT RESEARCH</small></a>
+    <p class="nav-label">DỮ LIỆU NGHIÊN CỨU</p>
+    <nav aria-label="Chọn trò chơi">
+    {% for code, spec in games.items() %}
+      <a href="/?code={{ code }}" {% if code == selected.code %}aria-current="page"{% endif %}><span>{{ spec.name }}</span><small>{{ 'CSV' if spec.import_enabled else 'Chờ xác minh' }}</small></a>
+    {% endfor %}
+    </nav>
+    <div class="sidebar-note"><span class="status-dot"></span> SQLITE · SINGLE PROCESS<p>Dữ liệu trước.<br>Kết luận sau.</p><a href="/docs">Tài liệu API ↗</a></div>
+  </aside>
+  <main>
+    <div class="topline"><span>RESEARCH DESK / {{ selected.code|upper }}</span><a href="/api/health">Trạng thái hệ thống ↗</a></div>
+    <header><div><p class="eyebrow">PHÒNG NGHIÊN CỨU XÁC SUẤT</p><h1>{{ selected.name }}<span>Không đoán. Kiểm chứng.</span></h1><p class="subtitle">Lịch sử có nguồn gốc. Thử nghiệm ngoài mẫu. Kết quả không tô hồng.</p></div><div class="edition">02<small>RESEARCH<br>EDITION</small></div></header>
+    <div class="notice"><strong>Không phải công cụ đảm bảo trúng thưởng.</strong> Xổ số ngẫu nhiên. Số nóng, số lạnh và số lâu chưa về không chứng minh lợi thế.</div>
+    {% if not selected.rules_verified %}<div class="pending"><strong>Cấu hình đang chờ đối chiếu thể lệ chính thức.</strong> Khóa ledger và tính thưởng tạm dừng. {% if not selected.import_enabled %}Game này chưa mở nhập dữ liệu.{% endif %}</div>{% endif %}
+    <section class="metrics" aria-label="Tình trạng dữ liệu">
+      <article><span>KỲ ĐÃ LƯU</span><strong>{{ summary.draw_count }}</strong><small>Tổng bản ghi trong kho</small></article>
+      <article><span>KỲ ĐÃ XÁC MINH</span><strong>{{ summary.verified_count }}</strong><small>Chỉ các kỳ này được phân tích</small></article>
+      <article><span>KỲ MỚI NHẤT ĐÃ XÁC MINH</span><strong class="date">{{ summary.latest.draw_date if summary.latest else 'Chưa có' }}</strong><small>{{ ('Kỳ #' ~ summary.latest.draw_id) if summary.latest else 'Nhập CSV để bắt đầu' }}</small></article>
+      <article><span>KHOẢNG KỲ THIẾU</span><strong>{{ summary.missing_ranges|length }}</strong><small>Khoảng ID cần đối chiếu</small></article>
+    </section>
+    <section class="panel"><div class="panel-heading"><div><p class="eyebrow">01 / QUAN SÁT</p><h2>Tần suất xuất hiện</h2></div><span class="badge">VERIFIED ONLY</span></div>
+      {% if summary.verified_count %}
+      <div class="frequency" aria-label="Bảng tần suất">
+        {% for item in frequency %}<div class="frequency-cell"><b>{{ '%02d'|format(item.number) if item.number is number else item.number }}</b><strong>{{ item.count }}</strong><small>{{ ('Cách ' ~ item.gap ~ ' kỳ') if item.gap is defined and item.gap is not none else 'Chưa xuất hiện' }}</small></div>{% endfor %}
+      </div>
+      {% else %}<div class="empty"><span>∅</span><h3>Chưa có dữ liệu để kết luận.</h3><p>Nhập lịch sử đã đối chiếu nguồn. Không dùng dữ liệu giả làm kết quả thật.</p></div>{% endif %}
+    </section>
+    <div class="workspace">
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">02 / THỬ NGHIỆM</p><h2>Bàn nghiên cứu</h2></div></div>
+        <label for="api-key">API key <small>Chỉ giữ trong bộ nhớ trang, không lưu trình duyệt</small></label><input id="api-key" type="password" autocomplete="off" placeholder="Nhập key để mở thao tác ghi">
+        <form id="backtest-form"><div class="form-row"><label>Model<select name="method"><option value="bayesian">Bayesian · shrinkage</option><option value="uniform">Uniform · baseline</option></select></label><label>Kỳ huấn luyện tối thiểu<input name="min_train" type="number" min="10" max="10000" value="100" required></label><label>Kỳ đánh giá<input name="test_draws" type="number" min="1" max="1000" value="100" required></label></div><button type="submit">Chạy walk-forward <span>↗</span></button></form>
+        <div class="tool-row"><button class="secondary" id="randomness" type="button">Kiểm định tần suất</button><button class="secondary" id="illusion" type="button">Dữ liệu ngẫu nhiên</button><button class="secondary" id="freeze" type="button">Khóa dataset</button></div>
+        <p class="footnote">CI bootstrap chỉ phục vụ khám phá; chưa có holdout độc lập. Không công bố model vượt random.</p>
+        <output id="result" aria-live="polite">Kết quả thử nghiệm sẽ hiển thị ở đây.</output>
+      </section>
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">03 / NGUỒN DỮ LIỆU</p><h2>Nhập lịch sử CSV</h2></div></div><p>Hỗ trợ CSV đa game và định dạng Power 6/55 cũ. Kiểm tra toàn bộ trước khi ghi; lỗi một dòng hủy cả lượt.</p>
+        <form id="import-form"><label for="csv-file">Tệp CSV · tối đa 10 MB</label><input id="csv-file" name="file" type="file" accept=".csv,text/csv" required><label class="attestation"><input type="checkbox" required> Đã đối chiếu độc lập những dòng ghi verified=true. Cờ này là xác nhận của người nhập, không phải chứng minh tự động.</label><button type="submit" {% if not selected.import_enabled %}disabled{% endif %}>Kiểm tra & nhập CSV <span>↗</span></button></form>
+        <p class="footnote">Crawler tự động tắt. Không tự gán verified từ parser hoặc tự suy đoán thể lệ.</p>
+        <div class="rule-box"><strong>Ledger / Quỹ giả lập / EV</strong><p>Chỉ mở sau khi thể lệ được xác minh. Quỹ chưa hỗ trợ đặt vé, thanh toán hay nạp tiền. Không có thao tác mua vé thật.</p><a href="/api/ledger?game={{ selected.code }}">Xem ledger công khai ↗</a></div>
+      </section>
+    </div>
+    <section class="panel"><div class="panel-heading"><div><p class="eyebrow">04 / LỊCH SỬ</p><h2>20 kỳ xác minh gần nhất</h2></div><a href="/api/games/{{ selected.code }}/draws">JSON ↗</a></div><div class="table-scroll"><table><thead><tr><th>Kỳ</th><th>Ngày / ca</th><th>Kết quả</th><th>Nguồn</th></tr></thead><tbody>{% for draw in draws %}<tr><td>#{{ draw.draw_id }}</td><td>{{ draw.draw_date }} · {{ draw.draw_slot }}</td><td class="numbers">{% for number in draw.main %}<span>{{ '%02d'|format(number) }}</span>{% endfor %}{% if draw.special is not none %}<span class="special">{{ '%02d'|format(draw.special) }}</span>{% endif %}{% if draw.digits %}{{ draw.digits }}{% endif %}</td><td><a href="{{ draw.source_url }}" target="_blank" rel="noopener noreferrer">Đối chiếu ↗</a></td></tr>{% else %}<tr><td colspan="4" class="muted">Chưa có bản ghi đã xác minh.</td></tr>{% endfor %}</tbody></table></div></section>
+    <footer><span>V/LAB · MINH BẠCH TRƯỚC KẾT QUẢ</span><span>Không cam kết lợi nhuận. Không gấp thếp.</span></footer>
+  </main>
+</body>
+</html>

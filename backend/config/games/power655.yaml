@@ -1,0 +1,33 @@
+{
+  "code": "power655",
+  "name": "Power 6/55",
+  "kind": "pick_k",
+  "number_min": 1,
+  "number_max": 55,
+  "pick_count": 6,
+  "special_max": 55,
+  "special_excludes_main": true,
+  "special_required": true,
+  "timezone": "Asia/Ho_Chi_Minh",
+  "weekdays": [
+    1,
+    3,
+    5
+  ],
+  "slots": [
+    "18:00"
+  ],
+  "ticket_price": null,
+  "prizes": {},
+  "digit_groups": {},
+  "rules_verified": false,
+  "rules_verified_at": null,
+  "rules_source_url": null,
+  "import_enabled": true,
+  "status": "draft: official rules and schedule require operator review",
+  "sources": {
+    "primary": "https://vietlott.vn",
+    "secondary": null
+  },
+  "crawl_enabled": false
+}
