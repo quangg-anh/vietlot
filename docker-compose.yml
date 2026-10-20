@@ -4,6 +4,7 @@ services:
     environment:
       API_KEY: ${API_KEY:?Set a strong API_KEY in .env}
       DATABASE_PATH: /app/data/research.sqlite3
+      AUTO_SYNC: ${AUTO_SYNC:-1}
     volumes:
       - research_data:/app/data
     ports:

@@ -23,13 +23,25 @@ def unpack(row):
     return item
 
 
-def history(code, connection=None):
+def history(code, connection=None, include_crawled=False):
     if connection is None:
         with connect() as current:
-            return history(code, current)
+            return history(code, current, include_crawled)
     return [unpack(row) for row in connection.execute(
-        "SELECT * FROM draws WHERE game_code=? AND verified=1 ORDER BY draw_date,draw_slot,draw_id", (code,))]
+        "SELECT d.* FROM draws d WHERE game_code=? AND (verified=1 OR (? AND EXISTS("
+        "SELECT 1 FROM crawl_observations c WHERE c.game_code=d.game_code AND c.draw_id=d.draw_id))) "
+        "ORDER BY draw_date,draw_slot,draw_id", (code, include_crawled))]
 
+
+def training_history(code, connection=None, include_crawled=False, before=None):
+    spec = game(code)
+    cutoff = before or datetime.now(timezone.utc)
+    return [row for row in history(code, connection, include_crawled)
+            if datetime.fromisoformat(f"{row['draw_date']}T{row['draw_slot']}")
+            .replace(tzinfo=ZoneInfo(spec["timezone"])) < cutoff]
+
+def training_fingerprint(rows, spec, revision, policy="verified_or_crawled"):
+    return hashlib.sha256(encode([rows, spec, policy, revision]).encode()).hexdigest()
 
 def validate(item):
     if any(value is None or not isinstance(value, str) for value in item.values()):

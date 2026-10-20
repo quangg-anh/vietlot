@@ -19,15 +19,26 @@
   ],
   "ticket_price": null,
   "prizes": {},
-  "digit_groups": {},
+  "digit_groups": {
+    "first": 2,
+    "second": 4,
+    "third": 6,
+    "consolation": 8
+  },
   "rules_verified": false,
   "rules_verified_at": null,
   "rules_source_url": null,
-  "import_enabled": false,
+  "import_enabled": true,
   "status": "draft: official rules and schedule require operator review",
   "sources": {
     "primary": "https://vietlott.vn",
-    "secondary": null
+    "secondary": "https://ketquaxoso.net/max-3d.html"
   },
-  "crawl_enabled": false
+  "crawl_enabled": true,
+  "crawler": {
+    "source": "ketquaxoso",
+    "list_url": "https://ketquaxoso.net/max-3d.html",
+    "history_url": "https://ketquaxoso.net/max-3d-p{page}.html",
+    "interval_minutes": 60
+  }
 }

@@ -14,17 +14,17 @@ marked verified.
 | --- | --- | --- |
 | Storage | SQLite WAL, foreign keys, busy timeout, versioned initial schema | PostgreSQL-to-SQLite migration requires export/import |
 | Games | Five JSON-compatible YAML config files | Official rule/schedule review required; three newer game imports blocked |
-| ETL | Atomic multi-game/legacy Power CSV, validation, provenance audit, gap ranges | Official adapters, two-source reconciliation, raw snapshots, automatic crawling |
+| ETL | Atomic CSV imports, Power/Mega crawler, compressed raw snapshots, provenance audit, operator review, gap ranges | Official adapters and automatic two-source reconciliation |
 | Statistics | Verified-only frequency/gaps, Monte Carlo frequency tests, Bonferroni within report, illusion simulator | Runs, ACF, pair/digit tests and report-wide trial registry |
-| Models | Uniform and shrunk Bayesian inclusion scores | Logistic, optional XGBoost, calibration, independent holdout, multiple-model correction |
+| Models | Automatic source-data Bayesian training, versioned previews and walk-forward evaluation; uniform baseline | Logistic, optional XGBoost, calibration, independent holdout, multiple-model correction |
 | Backtest | Walk-forward, sampled random control, Brier/log loss, paired bootstrap CI, input hash | Statistical promotion/edge claims remain disabled |
-| Ledger | Deadline/schedule checks, SHA-256, SQLite immutability, idempotent scores and feedback | External timestamp publication; automatic learning/promotion intentionally skipped |
+| Ledger | Deadline/schedule checks, SHA-256, SQLite immutability, idempotent scores and feedback | External timestamp publication; automatic model promotion intentionally skipped |
 | Funds / EV | Policy validation, guarded fund/control creation schema | Betting, payouts, settlement, fund Monte Carlo and EV unavailable |
-| Operations | Durable sequential jobs, restart recovery, online backup CLI, CI | APScheduler/crawl cron, daily backup scheduling and off-host sync |
+| Operations | Durable sequential jobs, restart recovery, default automatic crawl scheduler with backoff, online backup CLI, CI | Daily backup scheduling and off-host sync |
 
 All game configs start with `rules_verified=false`, `ticket_price=null`, and empty
-prizes. Structural CSV research for Power/Mega uses explicitly **draft** schedules.
-The other games fail closed until operators complete configuration review. Do not
+prizes. Structural imports and crawling use explicitly **draft** schedules for
+Power/Mega, Lotto 5/35 and Max 3D/Pro. Reviewed-rule operations stay blocked. Do not
 flip flags to claim production readiness. Verify current official rules, sources,
 schedule, special-number domains and prize groups first; record review URL/date.
 Ledger locking and funds require the review flag. Funds also require price/prizes,
@@ -62,6 +62,107 @@ python -m coverage report --show-missing
 No Node.js build, Redis, PostgreSQL, Celery, NumPy, pandas or XGBoost required.
 Game files use JSON syntax, a valid YAML subset, to avoid a separate YAML parser.
 SQLite path defaults to `data/research.sqlite3`; override `DATABASE_PATH` if needed.
+
+## Automatic result crawling
+
+Power 6/55 and Mega 6/45 fetch public results from `xoso.com.vn`.
+Lotto 5/35, Max 3D and Max 3D Pro use the `ketquaxoso.net` adapter.
+Lotto retains both daily slots and its separate special number. Max games retain
+all prize groups as three-character strings, including leading zeroes.
+These imports remain unverified; rule/prize review gates are unchanged.
+Max games use a separate three-digit model; they are not treated as pick-k games.
+The dashboard has one operational action: **Sync results**. It also shows
+automatic-sync status, model picks, result/prediction history, and per-number
+probabilities. Training and backtest controls are no longer exposed there.
+Manual Sync requires the configured API key, held only in tab memory.
+
+The single job runner enables automatic sync on startup by default. Every
+60 minutes (30 for Lotto) it resumes a 20-page history batch until backfill is complete,
+then fetches the latest page. Set `AUTO_SYNC=0` to turn schedules off on startup;
+a manual Sync explicitly enables the selected game's schedule again.
+`DISABLE_RUNNER=1` disables both job execution and automatic model updates.
+Model updates run in a separate background thread immediately at startup and
+every minute, so a slow history crawl cannot block training on imported data.
+Power/Mega and Lotto show the saved Bayesian model in the MODEL PICKS panel;
+Max 3D/Pro train separate probability distributions over `000`..`999` for every
+configured prize group. New eligible results trigger a new immutable model version
+within the next model cycle (at most about a minute, plus training time). Unchanged
+history reuses the current version. Changes to data, rules/config or algorithm
+revision trigger refitting; a version trained on a stale snapshot is not published.
+
+The digit learner compares uniform, smoothed frequency (60/300 draws), and
+position-wise Bayesian (120 draws) candidates by past-only categorical log loss.
+Configuration selection stops before the trailing evaluation segment; walk-forward
+evaluation refits on each earlier prefix, never on the draw being scored. The
+selected configuration is then refit on all eligible past results. Repeated rolling
+evaluation is exploratory, not an untouched independent holdout or a proven edge.
+Uniform selection is a valid outcome when alternatives do worse.
+
+The dashboard shows training/error state, recent version lineage, candidate numbers,
+and a prize-group probability selector. Probabilities refer to one prize value,
+not ticket/pair win probability. Max 3D candidates target the first-prize group;
+Max 3D Pro pairs target the special-prize group. Scores count candidate matches in
+that group, not payouts. Predictions are locked only for the next scheduled draw
+when the immediately preceding result is available. Once actual results arrive,
+predictions are scored once and the new result enters the next refit. Old predictions
+and scores are never rewritten. No betting or financial settlement is enabled.
+
+Queue a manual run from the project root:
+
+```sh
+python -m backend.app.crawler power655 --mode history --pages 20
+python -m backend.app.crawler mega645 --mode latest
+python -m backend.app.crawler lotto535 --mode history --pages 20
+python -m backend.app.crawler max3d --mode history --pages 20
+python -m backend.app.crawler max3dpro --mode latest
+python -m backend.app.crawler power655 --schedule on
+python -m backend.app.crawler power655 --schedule off
+```
+
+`DATABASE_PATH` must match the running application. `--pages` limits fetched
+result pages per job (1..50). History runs resume their persisted cursor;
+with a one-page budget they fetch the next historical page directly. Larger
+budgets refresh the latest page first. Incomplete historical pages stop the
+job without advancing that page's cursor, allowing a later retry.
+
+The crawler respects robots.txt, throttles requests, retries transient failures,
+rejects redirects and unconfigured hosts, and stores gzip snapshots for audit.
+Conflicting stored results are never overwritten. Scheduled failures use
+exponential backoff rather than tight retries.
+
+**Crawled results are automatically accepted for the automatic model workflow.**
+No manual verification step is required. Successfully parsed and validated rows
+with crawl provenance are included in training, prediction and scoring. Raw
+snapshots, source URLs and audit records remain available. `verified` is not
+silently set to true: source-only data is distinct from independent review.
+Optional operator review remains available through the authenticated
+`/api/games/{code}/draws/verify` endpoint, but does not block automatic operation.
+Other games remain unsupported by this adapter.
+
+## Automatic model workflow
+
+The model thread checks inputs every minute, independently of queued crawl work. New crawled or
+verified data triggers Bayesian shrinkage training, a persisted model version, five
+reproducible reference tickets, and an exploratory walk-forward evaluation
+once there are more than 10 eligible draws. Unchanged inputs do not retrain.
+The dashboard refreshes itself without reloading the page.
+
+Reference tickets are explicitly **not locked predictions** and never receive
+retroactive scores. Automatic pre-draw locking uses the configured game schedule
+and requires eligible results through the immediately preceding draw; no manual
+rules-review flag is required for this source-data workflow. Stale history still
+blocks locking. Locked predictions are immutable and automatically scored against
+matching crawler or verified results. Prediction and score metadata identify the
+`verified_or_crawled` policy and whether results were independently reviewed.
+Arbitrary unreviewed CSV imports without crawler provenance are not automatically
+accepted. Legacy research APIs and manually locked predictions retain their
+verified-only defaults; funds/payout restrictions are unchanged.
+No automatic model promotion or claim of an edge over random selection is made.
+
+`GET /api/games/{code}/workspace?before=ID` returns the combined dashboard state
+and paginated result history, including clearly labeled unverified rows.
+`POST /api/games/{code}/sync` queues a deduplicated crawl and enables its schedule;
+this endpoint requires `X-API-Key`. Existing research/admin APIs remain available.
 
 ## Verified history import
 

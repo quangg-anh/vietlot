@@ -65,7 +65,7 @@ class ResearchTests(unittest.TestCase):
         with connect() as connection:
             self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
 
     def test_only_verified_data_public_and_used(self):
         etl.import_csv(csv_bytes([draw(1), draw(2, "2025-01-04", "false")]))

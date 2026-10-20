@@ -23,6 +23,15 @@ CREATE TABLE IF NOT EXISTS model_versions (
     parent_version_id INTEGER REFERENCES model_versions(id),
     trained_through_draw_id INTEGER, parameters TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE TRIGGER IF NOT EXISTS model_versions_no_update BEFORE UPDATE ON model_versions
+BEGIN SELECT RAISE(ABORT,'model version is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS model_versions_no_delete BEFORE DELETE ON model_versions
+BEGIN SELECT RAISE(ABORT,'model version is immutable'); END;
+CREATE TABLE IF NOT EXISTS model_training_state (
+    game_code TEXT PRIMARY KEY, status TEXT NOT NULL,
+    started_at TEXT, finished_at TEXT, last_error TEXT,
+    model_version_id INTEGER REFERENCES model_versions(id)
+);
 CREATE TABLE IF NOT EXISTS predictions (
     id INTEGER PRIMARY KEY, game_code TEXT NOT NULL, target_draw_id INTEGER NOT NULL,
     target_at TEXT NOT NULL, model_version_id INTEGER NOT NULL REFERENCES model_versions(id),
@@ -46,7 +55,7 @@ CREATE TABLE IF NOT EXISTS feedback_events (
     action TEXT NOT NULL, detail TEXT NOT NULL, at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS jobs (
-    id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('backtest','score')),
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('backtest','score','crawl')),
     payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued'
     CHECK(status IN ('queued','running','done','failed')),
     result TEXT, error TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT
@@ -62,4 +71,22 @@ CREATE TABLE IF NOT EXISTS sim_funds (
     balance INTEGER NOT NULL CHECK(balance >= 0), policy TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','bankrupt','closed')),
     created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS raw_snapshots (
+    id INTEGER PRIMARY KEY, game_code TEXT NOT NULL, source TEXT NOT NULL,
+    url TEXT NOT NULL, content_hash TEXT NOT NULL, relative_path TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS crawl_observations (
+    snapshot_id INTEGER NOT NULL REFERENCES raw_snapshots(id),
+    game_code TEXT NOT NULL, draw_id INTEGER NOT NULL,
+    PRIMARY KEY(snapshot_id,game_code,draw_id),
+    FOREIGN KEY(game_code,draw_id) REFERENCES draws(game_code,draw_id)
+);
+CREATE TABLE IF NOT EXISTS crawl_state (
+    game_code TEXT PRIMARY KEY, next_history_page INTEGER NOT NULL DEFAULT 1,
+    history_complete INTEGER NOT NULL DEFAULT 0,
+    oldest_draw_id INTEGER, scheduled INTEGER NOT NULL DEFAULT 0,
+    next_due TEXT, last_job_id INTEGER REFERENCES jobs(id),
+    last_success_at TEXT, last_error TEXT, failures INTEGER NOT NULL DEFAULT 0
 );

@@ -3,56 +3,52 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Phòng nghiên cứu dữ liệu Vietlott. Kiểm định minh bạch, không cam kết trúng thưởng.">
-  <title>{{ selected.name }} · Vietlott Research Lab</title>
-  <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/app.js" defer></script>
+  <meta name="description" content="Đồng bộ Vietlott tự động. Theo dõi kết quả, dự đoán và xác suất trong một bảng điều khiển.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0f1727" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#eef3fc" media="(prefers-color-scheme: light)">
+  <title>{{ selected.name }} · Vietlott Desk</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <script src="/static/theme-boot.js"></script>
+  <script src="/static/theme.js" defer></script>
+  <script src="/static/dashboard.js" defer></script>
 </head>
 <body data-game="{{ selected.code }}">
-  <aside class="sidebar">
-    <a class="brand" href="/">V<span>/</span>LAB<small>VIETLOTT RESEARCH</small></a>
-    <p class="nav-label">DỮ LIỆU NGHIÊN CỨU</p>
-    <nav aria-label="Chọn trò chơi">
-    {% for code, spec in games.items() %}
-      <a href="/?code={{ code }}" {% if code == selected.code %}aria-current="page"{% endif %}><span>{{ spec.name }}</span><small>{{ 'CSV' if spec.import_enabled else 'Chờ xác minh' }}</small></a>
-    {% endfor %}
-    </nav>
-    <div class="sidebar-note"><span class="status-dot"></span> SQLITE · SINGLE PROCESS<p>Dữ liệu trước.<br>Kết luận sau.</p><a href="/docs">Tài liệu API ↗</a></div>
-  </aside>
-  <main>
-    <div class="topline"><span>RESEARCH DESK / {{ selected.code|upper }}</span><a href="/api/health">Trạng thái hệ thống ↗</a></div>
-    <header><div><p class="eyebrow">PHÒNG NGHIÊN CỨU XÁC SUẤT</p><h1>{{ selected.name }}<span>Không đoán. Kiểm chứng.</span></h1><p class="subtitle">Lịch sử có nguồn gốc. Thử nghiệm ngoài mẫu. Kết quả không tô hồng.</p></div><div class="edition">02<small>RESEARCH<br>EDITION</small></div></header>
-    <div class="notice"><strong>Không phải công cụ đảm bảo trúng thưởng.</strong> Xổ số ngẫu nhiên. Số nóng, số lạnh và số lâu chưa về không chứng minh lợi thế.</div>
-    {% if not selected.rules_verified %}<div class="pending"><strong>Cấu hình đang chờ đối chiếu thể lệ chính thức.</strong> Khóa ledger và tính thưởng tạm dừng. {% if not selected.import_enabled %}Game này chưa mở nhập dữ liệu.{% endif %}</div>{% endif %}
-    <section class="metrics" aria-label="Tình trạng dữ liệu">
-      <article><span>KỲ ĐÃ LƯU</span><strong>{{ summary.draw_count }}</strong><small>Tổng bản ghi trong kho</small></article>
-      <article><span>KỲ ĐÃ XÁC MINH</span><strong>{{ summary.verified_count }}</strong><small>Chỉ các kỳ này được phân tích</small></article>
-      <article><span>KỲ MỚI NHẤT ĐÃ XÁC MINH</span><strong class="date">{{ summary.latest.draw_date if summary.latest else 'Chưa có' }}</strong><small>{{ ('Kỳ #' ~ summary.latest.draw_id) if summary.latest else 'Nhập CSV để bắt đầu' }}</small></article>
-      <article><span>KHOẢNG KỲ THIẾU</span><strong>{{ summary.missing_ranges|length }}</strong><small>Khoảng ID cần đối chiếu</small></article>
-    </section>
-    <section class="panel"><div class="panel-heading"><div><p class="eyebrow">01 / QUAN SÁT</p><h2>Tần suất xuất hiện</h2></div><span class="badge">VERIFIED ONLY</span></div>
-      {% if summary.verified_count %}
-      <div class="frequency" aria-label="Bảng tần suất">
-        {% for item in frequency %}<div class="frequency-cell"><b>{{ '%02d'|format(item.number) if item.number is number else item.number }}</b><strong>{{ item.count }}</strong><small>{{ ('Cách ' ~ item.gap ~ ' kỳ') if item.gap is defined and item.gap is not none else 'Chưa xuất hiện' }}</small></div>{% endfor %}
+  <div class="app-shell">
+    <aside class="rail">
+      <a class="brand" href="/" aria-label="Vietlott Desk"><span class="brand-mark">v.</span><span>vietlott<small>DESK / AUTO RESEARCH</small></span></a>
+      <p class="rail-label">KHÔNG GIAN CỦA BẠN</p>
+      <nav class="game-nav" aria-label="Chọn trò chơi">
+        {% for code, spec in games.items() %}
+        <a href="/?code={{ code }}" {% if code == selected.code %}aria-current="page"{% endif %}><span class="game-symbol">{{ spec.pick_count if spec.kind == 'pick_k' else '3' }}</span><span>{{ spec.name }}<small>{{ 'Sync tự động' if spec.crawl_enabled else 'Chưa hỗ trợ sync' }}</small></span>{% if code == selected.code %}<span class="nav-indicator"></span>{% endif %}</a>
+        {% endfor %}
+      </nav>
+      <div class="rail-bottom"><span class="tiny-label">ÍT THAO TÁC HƠN.</span><h3>Để dữ liệu<br>tự vận hành.</h3><p>Sync, cập nhật model và đánh giá chạy ở nền.</p><a href="/docs">Tài liệu hệ thống <span aria-hidden="true">↗</span></a></div>
+    </aside>
+    <main>
+      <header class="topbar"><span class="breadcrumb">Không gian nghiên cứu <span>/</span> <strong>{{ selected.name }}</strong></span><div class="topbar-actions"><span class="live-pill" id="auto-status"><span class="dot"></span>Đang kiểm tra tự động</span><button type="button" class="theme-toggle" id="theme-toggle" aria-label="Chế độ giao diện"><svg class="theme-icon-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="4.5" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><svg class="theme-icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><svg class="theme-icon-auto" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.8"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg><span class="theme-label" id="theme-label">Giao diện</span></button></div></header>
+      <section class="page-heading"><div><p class="eyebrow">DỮ LIỆU RÕ RÀNG. MỌI THỨ GỌN GÀNG.</p><h1>Xin chào, {{ selected.name }}<span>.</span></h1><p>Kết quả, dự đoán và xác suất. Phần còn lại để hệ thống lo.</p></div><div class="sync-control"><button id="sync-button" type="button"><svg class="sync-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Sync kết quả</span></button><span id="last-sync">Chưa có lần đồng bộ</span></div></section>
+      <div class="status-message" id="status-message" role="status" aria-live="polite" hidden></div>
+      <div class="caution"><span class="caution-mark" aria-hidden="true">i</span><p>Xổ số là ngẫu nhiên. Dự đoán chỉ để tham khảo, không đảm bảo trúng thưởng. Kết quả crawl tự vào model, có lưu nguồn.</p></div>
+      <section class="stats" aria-label="Tổng quan dữ liệu">
+        <article><span class="stat-label">KỲ ĐÃ ĐỒNG BỘ</span><strong id="stat-total">{{ summary.draw_count }}</strong><span class="stat-caption">Lịch sử đã lưu</span><span class="stat-decor" aria-hidden="true">↙</span></article>
+        <article><span class="stat-label">KỲ DÙNG CHO MODEL</span><strong id="stat-verified">—</strong><span class="stat-caption" id="stat-pending">Tự nhận kết quả từ nguồn crawl</span></article>
+        <article><span class="stat-label">MODEL TỰ ĐỘNG</span><strong class="stat-text" id="stat-model">Đang kiểm tra</strong><span class="stat-caption" id="model-caption">Bayesian · cửa sổ 300 kỳ</span></article>
+        <article><span class="stat-label">LẦN QUAY KẾ TIẾP</span><strong class="stat-text" id="stat-next">—</strong><span class="stat-caption" id="next-caption">Theo lịch cấu hình</span></article>
+      </section>
+      <nav class="section-nav" aria-label="Các bảng"><a href="#prediction-panel">Dự đoán</a><a href="#history-panel">Lịch sử</a>{% if selected.kind != "digits" %}<a href="#probability-panel">Xác suất</a>{% endif %}<span>KHÔNG CẦN CẤU HÌNH MODEL</span></nav>
+      <div class="model-learning" id="model-learning" aria-live="polite"></div>
+      <div class="overview-grid">
+        <section class="panel prediction-panel" id="prediction-panel"><div class="panel-heading"><div><p class="eyebrow">01 / MODEL PICKS</p><h2>Bảng dự đoán</h2></div><span class="badge" id="prediction-badge">Tự động cập nhật</span></div><p class="panel-description" id="prediction-description">Các bộ số được tạo từ model sau khi dữ liệu từ Sync thay đổi.</p><div id="prediction-list" class="prediction-list"><div class="empty-state"><span class="empty-symbol">∅</span><h3>Đang đọc trạng thái model</h3><p>Dữ liệu thật, không điền số mẫu.</p></div></div><div class="panel-foot"><span class="dot blue"></span><span id="prediction-footnote">Dự đoán có lưu trước giờ quay mới được chấm điểm.</span></div></section>
+        <aside class="panel automation-panel"><div class="panel-heading"><div><p class="eyebrow">CHẠY NỀN / AUTOPILOT</p><h2>Mọi thứ tự động.</h2></div><span class="orbit" aria-hidden="true">◎</span></div><p class="panel-description">Không chọn model. Không bấm train.<br>Chỉ theo dõi kết quả.</p><ol class="pipeline"><li><span class="step-index">01</span><div><h3>Đồng bộ kết quả</h3><p id="pipeline-sync">Đọc lịch sync tự động</p></div><span class="step-light" id="sync-light"></span></li><li><span class="step-index">02</span><div><h3>Cập nhật model</h3><p id="pipeline-train">Train lại khi dữ liệu đổi</p></div><span class="step-light" id="train-light"></span></li><li><span class="step-index">03</span><div><h3>Đối chiếu & đánh giá</h3><p id="pipeline-score">Chấm dự đoán sau kỳ quay</p></div><span class="step-light" id="score-light"></span></li></ol><div class="automation-note"><span class="tiny-label">MINH BẠCH TỪ ĐẦU</span><p id="automation-note">Model không tự nhận có lợi thế so với chọn ngẫu nhiên.</p></div></aside>
       </div>
-      {% else %}<div class="empty"><span>∅</span><h3>Chưa có dữ liệu để kết luận.</h3><p>Nhập lịch sử đã đối chiếu nguồn. Không dùng dữ liệu giả làm kết quả thật.</p></div>{% endif %}
-    </section>
-    <div class="workspace">
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">02 / THỬ NGHIỆM</p><h2>Bàn nghiên cứu</h2></div></div>
-        <label for="api-key">API key <small>Chỉ giữ trong bộ nhớ trang, không lưu trình duyệt</small></label><input id="api-key" type="password" autocomplete="off" placeholder="Nhập key để mở thao tác ghi">
-        <form id="backtest-form"><div class="form-row"><label>Model<select name="method"><option value="bayesian">Bayesian · shrinkage</option><option value="uniform">Uniform · baseline</option></select></label><label>Kỳ huấn luyện tối thiểu<input name="min_train" type="number" min="10" max="10000" value="100" required></label><label>Kỳ đánh giá<input name="test_draws" type="number" min="1" max="1000" value="100" required></label></div><button type="submit">Chạy walk-forward <span>↗</span></button></form>
-        <div class="tool-row"><button class="secondary" id="randomness" type="button">Kiểm định tần suất</button><button class="secondary" id="illusion" type="button">Dữ liệu ngẫu nhiên</button><button class="secondary" id="freeze" type="button">Khóa dataset</button></div>
-        <p class="footnote">CI bootstrap chỉ phục vụ khám phá; chưa có holdout độc lập. Không công bố model vượt random.</p>
-        <output id="result" aria-live="polite">Kết quả thử nghiệm sẽ hiển thị ở đây.</output>
-      </section>
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">03 / NGUỒN DỮ LIỆU</p><h2>Nhập lịch sử CSV</h2></div></div><p>Hỗ trợ CSV đa game và định dạng Power 6/55 cũ. Kiểm tra toàn bộ trước khi ghi; lỗi một dòng hủy cả lượt.</p>
-        <form id="import-form"><label for="csv-file">Tệp CSV · tối đa 10 MB</label><input id="csv-file" name="file" type="file" accept=".csv,text/csv" required><label class="attestation"><input type="checkbox" required> Đã đối chiếu độc lập những dòng ghi verified=true. Cờ này là xác nhận của người nhập, không phải chứng minh tự động.</label><button type="submit" {% if not selected.import_enabled %}disabled{% endif %}>Kiểm tra & nhập CSV <span>↗</span></button></form>
-        <p class="footnote">Crawler tự động tắt. Không tự gán verified từ parser hoặc tự suy đoán thể lệ.</p>
-        <div class="rule-box"><strong>Ledger / Quỹ giả lập / EV</strong><p>Chỉ mở sau khi thể lệ được xác minh. Quỹ chưa hỗ trợ đặt vé, thanh toán hay nạp tiền. Không có thao tác mua vé thật.</p><a href="/api/ledger?game={{ selected.code }}">Xem ledger công khai ↗</a></div>
-      </section>
-    </div>
-    <section class="panel"><div class="panel-heading"><div><p class="eyebrow">04 / LỊCH SỬ</p><h2>20 kỳ xác minh gần nhất</h2></div><a href="/api/games/{{ selected.code }}/draws">JSON ↗</a></div><div class="table-scroll"><table><thead><tr><th>Kỳ</th><th>Ngày / ca</th><th>Kết quả</th><th>Nguồn</th></tr></thead><tbody>{% for draw in draws %}<tr><td>#{{ draw.draw_id }}</td><td>{{ draw.draw_date }} · {{ draw.draw_slot }}</td><td class="numbers">{% for number in draw.main %}<span>{{ '%02d'|format(number) }}</span>{% endfor %}{% if draw.special is not none %}<span class="special">{{ '%02d'|format(draw.special) }}</span>{% endif %}{% if draw.digits %}{{ draw.digits }}{% endif %}</td><td><a href="{{ draw.source_url }}" target="_blank" rel="noopener noreferrer">Đối chiếu ↗</a></td></tr>{% else %}<tr><td colspan="4" class="muted">Chưa có bản ghi đã xác minh.</td></tr>{% endfor %}</tbody></table></div></section>
-    <footer><span>V/LAB · MINH BẠCH TRƯỚC KẾT QUẢ</span><span>Không cam kết lợi nhuận. Không gấp thếp.</span></footer>
-  </main>
+      <section class="panel history-panel" id="history-panel"><div class="panel-heading history-heading"><div><p class="eyebrow">02 / TRACK RECORD</p><h2>Lịch sử kết quả & dự đoán</h2></div><div class="segmented" role="tablist" aria-label="Loại lịch sử"><button type="button" role="tab" aria-selected="true" aria-controls="results-view" id="results-tab">Kết quả</button><button type="button" role="tab" aria-selected="false" aria-controls="predictions-view" id="predictions-tab" tabindex="-1">Dự đoán đã lưu</button></div></div><div id="results-view" role="tabpanel" aria-labelledby="results-tab"><div class="table-scroll"><table><thead><tr><th>Kỳ quay</th><th>Ngày quay</th><th>Kết quả</th><th>Dự đoán khớp</th><th>Dữ liệu</th></tr></thead><tbody id="results-body"><tr><td colspan="5" class="table-empty">Đang tải lịch sử…</td></tr></tbody></table></div><div class="table-footer"><span id="history-count">20 kỳ mỗi trang</span><div class="pagination"><button type="button" id="newer-page" disabled aria-label="Trang mới hơn">←</button><button type="button" id="older-page" disabled aria-label="Trang cũ hơn">→</button></div></div></div><div id="predictions-view" role="tabpanel" aria-labelledby="predictions-tab" hidden><div class="table-scroll"><table><thead><tr><th>Kỳ dự đoán</th><th>Lưu trước giờ quay</th><th>Bộ số</th><th>Số khớp</th><th>Trạng thái</th></tr></thead><tbody id="predictions-body"></tbody></table></div><p class="table-explanation">Chỉ hiển thị dự đoán đã lưu bất biến trước giờ quay; bản tham khảo không được tính là thành tích.</p></div></section>
+      {% if selected.kind != "digits" %}
+      <section class="panel probability-panel" id="probability-panel"><div class="panel-heading"><div><p class="eyebrow">03 / UNDERSTAND THE ODDS</p><h2>Xác suất, không phải lời hứa.</h2></div><span class="badge">Xác suất từng số xuất hiện</span></div><div class="probability-summary"><div><span class="tiny-label" id="odds-label">TRÚNG ĐỦ 6 SỐ CHÍNH / MỘT BỘ</span><strong id="jackpot-odds">—</strong><span>Giả định các tổ hợp đồng khả năng; không bao gồm giải thưởng khác.</span></div><p id="probability-explanation">Xác suất lý thuyết không tăng vì một số lâu chưa xuất hiện. Điểm model là ước lượng nghiên cứu, không phải xác suất trúng của bộ số.</p></div><div class="probability-legend"><span id="probability-source"><i></i>Xác suất lý thuyết</span><span id="baseline-label">Mốc ngẫu nhiên: —</span></div><label class="digit-group-control" id="digit-group-control" hidden>Nhóm giải <select id="digit-group" aria-label="Nhóm giải Max 3D"></select></label><div id="probability-grid" class="probability-grid"></div><div class="model-evaluation" id="model-evaluation">Đang kiểm tra dữ liệu đánh giá…</div></section>
+      {% endif %}
+      <footer><span><strong>vietlott desk</strong> / Theo dõi có cơ sở. Kỳ vọng có giới hạn.</span><span>Không mua vé · Không cam kết lợi nhuận</span></footer>
+    </main>
+  </div>
+  <dialog id="auth-dialog" aria-labelledby="auth-title"><form id="auth-form"><p class="eyebrow">KẾT NỐI AN TOÀN</p><h2 id="auth-title">Cho phép đồng bộ</h2><p>Nhập API key của ứng dụng. Key chỉ giữ trong bộ nhớ tab, không lưu trình duyệt.</p><label for="api-key">API key</label><input id="api-key" type="password" autocomplete="off" required><p id="auth-error" role="alert"></p><div class="dialog-actions"><button type="button" id="auth-cancel" class="quiet-button">Hủy</button><button type="submit">Kết nối & Sync</button></div></form></dialog>
 </body>
 </html>

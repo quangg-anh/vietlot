@@ -30,10 +30,30 @@ def connect():
 def initialize():
     with connect() as connection:
         connection.execute("PRAGMA journal_mode=WAL")
-        if connection.execute("PRAGMA user_version").fetchone()[0] > 1:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version > 2:
             raise RuntimeError("Database schema newer than application")
         connection.executescript(Path(__file__).with_name("schema.sql").read_text())
-        connection.execute("PRAGMA user_version=1")
+        if version == 1:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE jobs_new (
+                    id INTEGER PRIMARY KEY,
+                    kind TEXT NOT NULL CHECK(kind IN ('backtest','score','crawl')),
+                    payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued'
+                    CHECK(status IN ('queued','running','done','failed')),
+                    result TEXT, error TEXT, created_at TEXT NOT NULL,
+                    started_at TEXT, finished_at TEXT
+                );
+                INSERT INTO jobs_new SELECT * FROM jobs;
+                DROP TABLE jobs;
+                ALTER TABLE jobs_new RENAME TO jobs;
+                CREATE INDEX jobs_status ON jobs(status,id);
+            """)
+            if connection.execute("PRAGMA foreign_key_check").fetchone():
+                raise sqlite3.IntegrityError("Migration foreign key validation failed")
+        connection.execute("PRAGMA user_version=2")
 
 
 def encode(value):

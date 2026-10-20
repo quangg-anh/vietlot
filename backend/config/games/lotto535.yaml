@@ -5,7 +5,7 @@
   "number_min": 1,
   "number_max": 35,
   "pick_count": 5,
-  "special_max": null,
+  "special_max": 12,
   "special_excludes_main": false,
   "special_required": true,
   "timezone": "Asia/Ho_Chi_Minh",
@@ -28,11 +28,17 @@
   "rules_verified": false,
   "rules_verified_at": null,
   "rules_source_url": null,
-  "import_enabled": false,
+  "import_enabled": true,
   "status": "draft: official rules and schedule require operator review",
   "sources": {
     "primary": "https://vietlott.vn",
-    "secondary": null
+    "secondary": "https://ketquaxoso.net/lotto-5-35.html"
   },
-  "crawl_enabled": false
+  "crawl_enabled": true,
+  "crawler": {
+    "source": "ketquaxoso",
+    "list_url": "https://ketquaxoso.net/lotto-5-35.html",
+    "history_url": "https://ketquaxoso.net/lotto-5-35-p{page}.html",
+    "interval_minutes": 30
+  }
 }

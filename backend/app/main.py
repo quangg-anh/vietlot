@@ -26,6 +26,7 @@ from .games import game, games
 from .jobs import Runner, enqueue
 from .lab import illusion, randomness
 from .ledger import lock
+from . import autopilot, crawler
 
 
 logging.basicConfig(level=logging.INFO)
@@ -44,7 +45,7 @@ async def lifespan(app):
         runner.close()
 
 
-app = FastAPI(title="Vietlott Research Lab", version="2.0.0", lifespan=lifespan, docs_url=None, redoc_url=None,
+app = FastAPI(title="Vietlott Research Lab", version="2.1.0", lifespan=lifespan, docs_url=None, redoc_url=None,
               description="Verified-data research. No guaranteed winning numbers or profit.")
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 visitors = OrderedDict()
@@ -113,6 +114,23 @@ class PredictRequest(StrictModel):
 class GameRequest(StrictModel):
     game: str
 
+class CrawlRequest(StrictModel):
+    mode: Literal["latest", "history"] = "latest"
+    pages: int = Field(default=1, ge=1, le=50)
+
+class ScheduleRequest(StrictModel):
+    enabled: bool
+
+class DrawReview(StrictModel):
+    draw_id: int = Field(gt=0)
+    fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+class VerificationRequest(StrictModel):
+    draws: list[DrawReview] = Field(min_length=1, max_length=500)
+    checked_source_url: str = Field(min_length=10, max_length=2000)
+    note: str = Field(min_length=10, max_length=2000)
+    acknowledged: Literal[True]
+
 
 class FundPolicy(StrictModel):
     tickets_per_draw: int = Field(default=1, ge=1, le=10)
@@ -141,7 +159,29 @@ def health():
     with connect() as connection:
         connection.execute("SELECT 1").fetchone()
     return {"status": "ok", "version": app.version, "storage": "sqlite",
-            "crawl": "disabled: official sources/rules require review", "disclaimer": DISCLAIMER}
+            "crawl": "Power/Mega automatic sync and source-data training; no manual review required", "disclaimer": DISCLAIMER}
+
+@app.post("/api/games/{code}/crawl", dependencies=[Depends(require_key)], status_code=202)
+def start_crawl(code: str, body: CrawlRequest):
+    return crawler.queue_crawl(code, body.mode, body.pages)
+
+@app.get("/api/games/{code}/crawl/status")
+def crawl_status(code: str):
+    return crawler.status(code)
+
+@app.post("/api/games/{code}/crawl/schedule", dependencies=[Depends(require_key)])
+def crawl_schedule(code: str, body: ScheduleRequest):
+    return crawler.set_schedule(code, body.enabled)
+
+@app.get("/api/games/{code}/draws/pending", dependencies=[Depends(require_key)])
+def pending_draws(code: str, limit: int = Query(100, ge=1, le=500)):
+    return {"items": crawler.pending(code, limit), "verified": False, "disclaimer": DISCLAIMER}
+
+@app.post("/api/games/{code}/draws/verify", dependencies=[Depends(require_key)])
+def verify_draws(code: str, body: VerificationRequest):
+    result = crawler.verify(code, [entry.model_dump() for entry in body.draws], body.checked_source_url, body.note)
+    enqueue("score", {})
+    return result
 
 
 @app.get("/api/games")
@@ -278,9 +318,23 @@ def simulate(body: GameRequest):
 def dashboard(request: Request, code: str = "power655"):
     spec = game(code)
     return templates.TemplateResponse(request=request, name="dashboard.html", context={
-        "games": games(), "selected": spec, "summary": summary(code),
-        "draws": draws(code, 20, None)["items"], "frequency": frequency(history(code), spec),
+        "games": dict(sorted(games().items(), key=lambda entry: (not entry[1].get("crawl_enabled", False), entry[0] != "power655", entry[0]))), "selected": spec, "summary": summary(code),
     })
+
+@app.get("/api/games/{code}/workspace")
+def workspace_state(code: str, before: int | None = Query(None, gt=0)):
+    return autopilot.workspace(code, before)
+
+@app.post("/api/games/{code}/sync", dependencies=[Depends(require_key)], status_code=202)
+def sync_workspace(code: str):
+    crawler.crawl_spec(code)
+    with connect() as connection:
+        state = connection.execute("SELECT history_complete FROM crawl_state WHERE game_code=?", (code,)).fetchone()
+    complete = bool(state and state[0])
+    queued = crawler.queue_crawl(code, "latest" if complete else "history", 1 if complete else 20)
+    with connect() as connection:
+        connection.execute("UPDATE crawl_state SET scheduled=1,next_due=coalesce(next_due,?) WHERE game_code=?", (autopilot.now(), code))
+    return queued
 
 
 @app.get("/docs", include_in_schema=False)
