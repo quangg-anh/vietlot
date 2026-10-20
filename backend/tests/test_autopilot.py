@@ -3,7 +3,7 @@ import os
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -77,11 +77,43 @@ class AutopilotTests(unittest.TestCase):
         self.assertEqual(json.loads(job["payload"]), {"game": "power655", "mode": "history", "pages": 20})
         with connect() as connection:
             connection.execute("UPDATE jobs SET status='done'")
-            connection.execute("UPDATE crawl_state SET history_complete=1")
-        crawler.queue_due()
+            connection.execute("UPDATE crawl_state SET history_complete=1,next_due='2000-01-01'")
+        with patch.object(crawler, "datetime") as clock:
+            clock.now.return_value = datetime(2026, 10, 20, 11, 45, tzinfo=timezone.utc)
+            with patch.object(crawler, "result_sync_window", return_value=True):
+                crawler.queue_due()
         with connect() as connection:
             latest = connection.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 1").fetchone()
         self.assertEqual(json.loads(latest["payload"])["mode"], "latest")
+
+    def test_result_sync_uses_draw_days_and_delayed_windows(self):
+        spec = game("power655")
+        for current, expected in [
+            ("2026-10-20T10:59:00+00:00", "2026-10-20T11:45:00+00:00"),
+            ("2026-10-20T11:45:00+00:00", "2026-10-20T12:00:00+00:00"),
+            ("2026-10-20T12:00:00+00:00", "2026-10-22T11:45:00+00:00"),
+        ]:
+            self.assertEqual(crawler.next_result_sync(spec, datetime.fromisoformat(current)), expected)
+        for minute, expected in [(39, False), (44, False), (45, True), (59, True), (60, True), (61, False)]:
+            current = datetime(2026, 10, 20, 11, tzinfo=timezone.utc) + timedelta(minutes=minute)
+            self.assertEqual(crawler.result_sync_window(spec, current), expected)
+
+    def test_result_sync_handles_multiple_daily_slots(self):
+        spec = game("lotto535") | {"weekdays": list(range(7)), "slots": ["13:00", "21:00"]}
+        current = datetime.fromisoformat("2026-10-20T07:00:00+00:00")
+        self.assertEqual(crawler.next_result_sync(spec, current), "2026-10-20T14:45:00+00:00")
+
+    def test_complete_history_reschedules_legacy_timer_outside_result_window(self):
+        crawler.set_schedule("power655", True)
+        with connect() as connection:
+            connection.execute("UPDATE crawl_state SET history_complete=1,next_due='2000-01-01'")
+        with patch.object(crawler, "datetime") as clock:
+            clock.now.return_value = datetime(2026, 10, 20, 10, tzinfo=timezone.utc)
+            clock.fromisoformat.side_effect = datetime.fromisoformat
+            crawler.queue_due()
+        with connect() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
+        self.assertEqual(crawler.status("power655")["state"]["next_due"], "2026-10-20T11:45:00+00:00")
 
     def test_no_training_from_unverified_draws(self):
         etl.import_csv(csv_bytes([draw(verified="false")]))

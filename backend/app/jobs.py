@@ -6,7 +6,7 @@ from datetime import timedelta, datetime, timezone
 from .analytics import backtest
 from .db import connect, encode
 from .etl import now
-from .crawler import queue_due, record_failure, run_crawl
+from .crawler import cleanup_raw_snapshots, queue_due, record_failure, run_crawl
 from .ledger import score_pending
 from . import autopilot
 
@@ -88,8 +88,17 @@ class Runner:
 
     def loop(self):
         next_score = datetime.now(timezone.utc)
+        next_cleanup = datetime.now(timezone.utc)
         while not self.stop.is_set():
             try:
+                if datetime.now(timezone.utc) >= next_cleanup:
+                    next_cleanup = datetime.now(timezone.utc) + timedelta(minutes=5)
+                    try:
+                        removed = cleanup_raw_snapshots()
+                        if removed:
+                            log.info("Removed %s imported raw snapshot files", removed)
+                    except Exception:
+                        log.exception("Raw snapshot cleanup failed")
                 queue_due()
                 if datetime.now(timezone.utc) >= next_score:
                     with connect() as connection:

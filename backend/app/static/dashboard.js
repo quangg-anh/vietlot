@@ -241,7 +241,7 @@ function render(data) {
   button.disabled = !data.crawl_enabled || active || syncing;
   button.setAttribute("aria-busy", String(active || syncing));
   button.querySelector("span").textContent = active ? "Đang đồng bộ…" : "Sync kết quả";
-  element("pipeline-sync").textContent = active ? "Đang tải kết quả nguồn" : automatic ? (data.sync.history_complete ? "Mỗi 60 phút · lấy kỳ mới" : "Mỗi 60 phút · tiếp tục tải lịch sử") : "Chưa chạy lịch tự động";
+  element("pipeline-sync").textContent = active ? "Đang tải kết quả nguồn" : automatic ? (data.sync.history_complete ? "Sau giờ quay 45 và 60 phút" : "Đang bổ sung lịch sử tự động") : "Chưa chạy lịch tự động";
   element("pipeline-train").textContent = !data.supported ? "Trò chơi chưa hỗ trợ train" : !data.runner_enabled ? "Bật worker để tự train" : data.model ? `Đã train đến kỳ #${data.model.trained_through}` : "Chờ kết quả từ Sync";
   element("pipeline-score").textContent = !data.supported ? "Chưa có dự đoán tự động" : "Tự lưu dự đoán · tự chấm khi có kết quả";
   element("sync-light").classList.toggle("ready", automatic);

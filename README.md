@@ -77,8 +77,12 @@ probabilities. Training and backtest controls are no longer exposed there.
 Manual Sync requires the configured API key, held only in tab memory.
 
 The single job runner enables automatic sync on startup by default. Every
-60 minutes (30 for Lotto) it resumes a 20-page history batch until backfill is complete,
-then fetches the latest page. Set `AUTO_SYNC=0` to turn schedules off on startup;
+60 minutes (30 for Lotto) it resumes a 20-page history batch until backfill is complete.
+After backfill, latest-result sync runs 45 and 60 minutes after each configured
+draw slot, using each game's timezone and draw weekdays (including both Lotto
+slots). Existing interval timers are rescheduled outside these windows. Failed
+requests retain their retry backoff; manual Sync still runs immediately.
+Set `AUTO_SYNC=0` to turn schedules off on startup;
 a manual Sync explicitly enables the selected game's schedule again.
 `DISABLE_RUNNER=1` disables both job execution and automatic model updates.
 Model updates run in a separate background thread immediately at startup and
@@ -126,14 +130,22 @@ budgets refresh the latest page first. Incomplete historical pages stop the
 job without advancing that page's cursor, allowing a later retry.
 
 The crawler respects robots.txt, throttles requests, retries transient failures,
-rejects redirects and unconfigured hosts, and stores gzip snapshots for audit.
+rejects redirects and unconfigured hosts, and stores temporary gzip snapshots.
+The background worker checks every five minutes and deletes raw HTML files older
+than one hour only when every snapshot referencing that file has committed crawl
+observations in the database. Existing imported raw files are also eligible.
+Failed or unprocessed snapshots are retained for diagnosis. Draws, snapshot
+metadata (source URL and SHA-256), observations and audit records are not deleted.
+Cleanup runs when the worker is enabled; file errors are logged and retried on
+the next pass without blocking crawling.
 Conflicting stored results are never overwritten. Scheduled failures use
 exponential backoff rather than tight retries.
 
 **Crawled results are automatically accepted for the automatic model workflow.**
 No manual verification step is required. Successfully parsed and validated rows
 with crawl provenance are included in training, prediction and scoring. Raw
-snapshots, source URLs and audit records remain available. `verified` is not
+snapshot metadata, source URLs and audit records remain available; imported raw
+HTML files are automatically cleaned up as described above. `verified` is not
 silently set to true: source-only data is distinct from independent review.
 Optional operator review remains available through the authenticated
 `/api/games/{code}/draws/verify` endpoint, but does not block automatic operation.

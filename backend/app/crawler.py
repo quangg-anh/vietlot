@@ -2,9 +2,11 @@ import argparse
 import gzip
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlsplit
+from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 
@@ -91,6 +93,33 @@ def fingerprint(row):
         "game_code", "draw_id", "draw_date", "draw_slot", "main", "special", "digits", "source_url", "imported_at")}).encode()).hexdigest()
 
 
+def cleanup_raw_snapshots():
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    root = (database_path().parent / "raw").resolve()
+    removed = 0
+    with connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        candidates = connection.execute("""
+            SELECT relative_path FROM raw_snapshots
+            GROUP BY relative_path
+            HAVING max(fetched_at) < ? AND min(EXISTS(
+                SELECT 1 FROM crawl_observations
+                WHERE snapshot_id=raw_snapshots.id
+            ))=1
+        """, (cutoff,)).fetchall()
+        for candidate in candidates:
+            path = (database_path().parent / candidate["relative_path"]).resolve()
+            if not path.is_relative_to(root) or path.suffixes[-2:] != [".html", ".gz"]:
+                continue
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                continue
+            except OSError:
+                logging.getLogger(__name__).warning("Cannot remove raw snapshot %s", path, exc_info=True)
+    return removed
+
 def persist_page(code, rows, snapshot_id, page):
     added, unchanged = 0, 0
     with connect() as connection:
@@ -140,6 +169,33 @@ def queue_crawl(code, mode="latest", pages=1):
         connection.execute("UPDATE crawl_state SET last_job_id=? WHERE game_code=?", (identity, code))
     return {"job_id": identity, "status": "queued"}
 
+
+def next_result_sync(spec, current=None):
+    current = (current or datetime.now(timezone.utc)).astimezone(ZoneInfo(spec["timezone"]))
+    candidates = []
+    for offset in range(-1, 8):
+        day = current.date() + timedelta(days=offset)
+        if day.weekday() not in spec["weekdays"]:
+            continue
+        for slot in spec["slots"]:
+            draw_at = datetime.fromisoformat(f"{day.isoformat()}T{slot}").replace(tzinfo=current.tzinfo)
+            for delay in (45, 60):
+                target = draw_at + timedelta(minutes=delay)
+                if target > current:
+                    candidates.append(target)
+    return min(candidates).astimezone(timezone.utc).isoformat()
+
+def result_sync_window(spec, current):
+    local = current.astimezone(ZoneInfo(spec["timezone"]))
+    for offset in (-1, 0):
+        day = local.date() + timedelta(days=offset)
+        if day.weekday() not in spec["weekdays"]:
+            continue
+        for slot in spec["slots"]:
+            draw_at = datetime.fromisoformat(f"{day.isoformat()}T{slot}").replace(tzinfo=local.tzinfo)
+            if timedelta(minutes=45) <= local - draw_at <= timedelta(minutes=60):
+                return True
+    return False
 
 def run_crawl(payload, job_id, stop=None, fetcher=None):
     code, mode, limit = payload["game"], payload["mode"], payload["pages"]
@@ -191,7 +247,9 @@ def run_crawl(payload, job_id, stop=None, fetcher=None):
             result["history_complete"] = True
             break
     with connect() as connection:
-        due = (datetime.now(timezone.utc) + timedelta(minutes=spec["crawler"]["interval_minutes"])).isoformat()
+        state = connection.execute("SELECT history_complete FROM crawl_state WHERE game_code=?", (code,)).fetchone()
+        due = next_result_sync(spec) if state and state["history_complete"] else (
+            datetime.now(timezone.utc) + timedelta(minutes=spec["crawler"]["interval_minutes"])).isoformat()
         connection.execute("UPDATE crawl_state SET last_success_at=?,last_error=NULL,failures=0,next_due=? WHERE game_code=?", (now(), due, code))
     return result
 
@@ -206,11 +264,16 @@ def set_schedule(code, enabled):
 
 
 def queue_due():
+    current = datetime.now(timezone.utc)
     with connect() as connection:
-        due = connection.execute("SELECT game_code,history_complete FROM crawl_state WHERE scheduled=1 AND (next_due IS NULL OR next_due<=?)", (now(),)).fetchall()
+        due = connection.execute("SELECT game_code,history_complete,failures FROM crawl_state WHERE scheduled=1 AND (next_due IS NULL OR next_due<=?)", (current.isoformat(),)).fetchall()
     for row in due:
         code = row[0]
         try:
+            if row["history_complete"] and not row["failures"] and not result_sync_window(game(code), current):
+                with connect() as connection:
+                    connection.execute("UPDATE crawl_state SET next_due=? WHERE game_code=?", (next_result_sync(game(code), current), code))
+                continue
             queue_crawl(code, "latest" if row["history_complete"] else "history", 1 if row["history_complete"] else 20)
         except ValueError as exc:
             record_failure(code, str(exc))

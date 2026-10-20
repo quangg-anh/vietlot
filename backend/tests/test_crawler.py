@@ -199,6 +199,50 @@ class CrawlIntegrationTests(unittest.TestCase):
         self.assertEqual(repeated["result"]["added"], 0)
         self.assertEqual(repeated["result"]["unchanged"], 2)
 
+    def test_cleanup_removes_only_old_imported_files_and_keeps_provenance(self):
+        self.crawl()
+        self.assertEqual(crawler.cleanup_raw_snapshots(), 0)
+        with connect() as connection:
+            snapshot = connection.execute("SELECT * FROM raw_snapshots").fetchone()
+            connection.execute("UPDATE raw_snapshots SET fetched_at='2000-01-01T00:00:00+00:00'")
+        self.assertEqual(crawler.cleanup_raw_snapshots(), 1)
+        self.assertFalse((Path(self.directory.name) / snapshot["relative_path"]).exists())
+        self.assertEqual(crawler.cleanup_raw_snapshots(), 0)
+        with connect() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM draws").fetchone()[0], 2)
+            self.assertEqual(connection.execute("SELECT count(*) FROM raw_snapshots").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT count(*) FROM crawl_observations").fetchone()[0], 2)
+        self.assertEqual(self.crawl()["result"]["unchanged"], 2)
+
+    def test_cleanup_preserves_failed_import_and_shared_unprocessed_file(self):
+        self.crawl()
+        crawler.snapshot("power655", SOURCE, POWER)
+        failed = self.crawl(responses=[b"<html>changed</html>"])
+        self.assertEqual(failed["status"], "failed")
+        with connect() as connection:
+            connection.execute("UPDATE raw_snapshots SET fetched_at='2000-01-01T00:00:00+00:00'")
+            snapshots = connection.execute("SELECT relative_path FROM raw_snapshots").fetchall()
+        self.assertEqual(crawler.cleanup_raw_snapshots(), 0)
+        for snapshot in snapshots:
+            self.assertTrue((Path(self.directory.name) / snapshot["relative_path"]).is_file())
+
+    def test_cleanup_rejects_paths_outside_raw_directory(self):
+        self.crawl()
+        outside = Path(self.directory.name) / "outside.html.gz"
+        outside.write_bytes(b"keep")
+        with connect() as connection:
+            connection.execute("UPDATE raw_snapshots SET relative_path='raw/../outside.html.gz', fetched_at='2000-01-01T00:00:00+00:00'")
+        self.assertEqual(crawler.cleanup_raw_snapshots(), 0)
+        self.assertEqual(outside.read_bytes(), b"keep")
+
+    def test_cleanup_continues_after_file_error(self):
+        self.crawl()
+        with connect() as connection:
+            connection.execute("UPDATE raw_snapshots SET fetched_at='2000-01-01T00:00:00+00:00'")
+        with patch.object(Path, "unlink", side_effect=PermissionError("locked")):
+            self.assertEqual(crawler.cleanup_raw_snapshots(), 0)
+        self.assertEqual(crawler.cleanup_raw_snapshots(), 1)
+
     def test_history_cursor_resume_and_empty_end(self):
         result = self.crawl("history", 2, [POWER, older_power()])
         self.assertEqual(result["status"], "done")
