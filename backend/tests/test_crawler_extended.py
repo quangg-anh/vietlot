@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -16,6 +17,9 @@ FIXTURES = Path(__file__).with_name("fixtures")
 
 def fixture(code):
     return (FIXTURES / f"{code}_source.html").read_bytes()
+
+def latest_fixture(code):
+    return fixture(code + "_minhchinh")
 
 
 def parse(code, raw=None):
@@ -76,11 +80,11 @@ class ExtendedCrawlTests(unittest.TestCase):
         self.directory.cleanup()
 
     def test_all_games_persist_and_repeated_sync_is_idempotent(self):
-        for code in ("lotto535", "max3d", "max3dpro"):
+        for code in ("lotto535", "max3d", "max3dpro", "mega645", "power655"):
             with self.subTest(code=code):
                 job = crawler.queue_crawl(code)
                 fetcher = Mock()
-                fetcher.fetch.return_value = fixture(code)
+                fetcher.fetch.return_value = latest_fixture(code)
                 payload = {"game": code, "mode": "latest", "pages": 1}
                 first = crawler.run_crawl(payload, job["job_id"], fetcher=fetcher)
                 second = crawler.run_crawl(payload, job["job_id"], fetcher=fetcher)
@@ -88,7 +92,7 @@ class ExtendedCrawlTests(unittest.TestCase):
                 self.assertEqual(second["added"], 0)
                 self.assertEqual(second["unchanged"], first["added"])
                 with connect() as connection:
-                    self.assertEqual(connection.execute("SELECT source FROM raw_snapshots WHERE game_code=? LIMIT 1", (code,)).fetchone()[0], "ketquaxoso")
+                    self.assertEqual(connection.execute("SELECT source FROM raw_snapshots WHERE game_code=? LIMIT 1", (code,)).fetchone()[0], "minhchinh")
 
     def test_history_uses_source_page_number_and_stops_at_last_page(self):
         code = "lotto535"
@@ -102,6 +106,49 @@ class ExtendedCrawlTests(unittest.TestCase):
         result = crawler.run_crawl({"game": code, "mode": "history", "pages": 1}, job["job_id"], fetcher=fetcher)
         fetcher.fetch.assert_called_once_with("https://ketquaxoso.net/lotto-5-35-p2.html")
         self.assertTrue(result["history_complete"])
+
+    def test_stale_lotto_source_retries_and_keeps_stored_results(self):
+        code = "lotto535"
+        job = crawler.queue_crawl(code)
+        fetcher = Mock()
+        fetcher.fetch.return_value = latest_fixture(code)
+        expected = datetime.fromisoformat("2026-10-21T21:00:00+07:00")
+        with patch.object(crawler, "expected_result_slot", return_value=expected):
+            result = crawler.run_crawl({"game": code, "mode": "latest", "pages": 1}, job["job_id"], fetcher=fetcher)
+        self.assertTrue(result["source_stale"])
+        self.assertEqual(result["source_latest_draw_id"], 959)
+        self.assertGreater(result["added"], 0)
+        state = crawler.status(code)["state"]
+        self.assertTrue(state["last_error"].startswith("Source stale:"))
+        self.assertLessEqual(datetime.fromisoformat(state["next_due"]), datetime.now(timezone.utc) + timedelta(minutes=15))
+        with connect() as connection:
+            connection.execute("UPDATE jobs SET status='done'")
+            connection.execute("UPDATE crawl_state SET scheduled=1,history_complete=1,next_due='2000-01-01' WHERE game_code=?", (code,))
+        crawler.queue_due()
+        with connect() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM jobs WHERE status='queued'").fetchone()[0], 1)
+
+    def test_fresh_lotto_source_clears_stale_warning(self):
+        code = "lotto535"
+        job = crawler.queue_crawl(code)
+        fetcher = Mock()
+        fetcher.fetch.return_value = latest_fixture(code)
+        with connect() as connection:
+            connection.execute("UPDATE crawl_state SET last_error='Source stale: previous attempt'")
+        expected = datetime.fromisoformat("2026-10-20T21:00:00+07:00")
+        with patch.object(crawler, "expected_result_slot", return_value=expected):
+            result = crawler.run_crawl({"game": code, "mode": "latest", "pages": 1}, job["job_id"], fetcher=fetcher)
+        self.assertFalse(result["source_stale"])
+        self.assertIsNone(crawler.status(code)["state"]["last_error"])
+
+    def test_expected_slot_waits_45_minutes_after_each_lotto_draw(self):
+        spec = game("lotto535")
+        for current, expected in [
+            ("2026-10-21T13:44:00+07:00", "2026-10-20T21:00:00+07:00"),
+            ("2026-10-21T13:45:00+07:00", "2026-10-21T13:00:00+07:00"),
+            ("2026-10-21T21:45:00+07:00", "2026-10-21T21:00:00+07:00"),
+        ]:
+            self.assertEqual(crawler.expected_result_slot(spec, datetime.fromisoformat(current)).isoformat(), expected)
 
     def test_same_source_cannot_verify_draws(self):
         with self.assertRaisesRegex(ValueError, "independent"):

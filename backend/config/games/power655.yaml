@@ -27,13 +27,15 @@
   "status": "draft: official rules and schedule require operator review",
   "sources": {
     "primary": "https://vietlott.vn",
-    "secondary": "https://xoso.com.vn/xo-so-power-655.html"
+    "secondary": "https://www.minhchinh.com/truc-tiep-xo-so-tu-chon-power-655.html"
   },
   "crawl_enabled": true,
   "crawler": {
     "source": "xoso",
     "list_url": "https://xoso.com.vn/xo-so-power-655.html",
     "history_url": "https://xoso.com.vn/XSDienToan/GetMorePower655",
-    "interval_minutes": 60
+    "interval_minutes": 60,
+    "latest_source": "minhchinh",
+    "latest_url": "https://www.minhchinh.com/truc-tiep-xo-so-tu-chon-power-655.html"
   }
 }

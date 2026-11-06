@@ -10,7 +10,7 @@ from .db import connect, encode
 from .etl import now, unpack, training_history, training_fingerprint
 from . import digit_model
 from .games import game, games
-from .ledger import lock, score_pending
+from .ledger import SCORING_COLUMNS, lock, score_pending, scoring_blocker
 
 log = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ def workspace(code, before=None, limit=20):
         usable = connection.execute("SELECT count(*) FROM draws d WHERE game_code=? AND (verified=1 OR EXISTS(SELECT 1 FROM crawl_observations c WHERE c.game_code=d.game_code AND c.draw_id=d.draw_id))", (code,)).fetchone()[0]
         raw = connection.execute("SELECT d.*,EXISTS(SELECT 1 FROM crawl_observations c WHERE c.game_code=d.game_code AND c.draw_id=d.draw_id) AS crawled FROM draws d WHERE game_code=? AND (? IS NULL OR draw_id<?) ORDER BY draw_id DESC LIMIT ?", (code, before, before, limit)).fetchall()
         model = active_model(connection, code)
-        predictions = connection.execute("SELECT p.*,s.result AS score FROM predictions p LEFT JOIN scores s ON s.prediction_id=p.id WHERE p.game_code=? ORDER BY p.id DESC LIMIT 20", (code,)).fetchall()
+        predictions = connection.execute("SELECT p.*,s.result AS score," + SCORING_COLUMNS + " FROM predictions p LEFT JOIN scores s ON s.prediction_id=p.id LEFT JOIN draws d ON d.game_code=p.game_code AND d.draw_id=p.target_draw_id WHERE p.game_code=? ORDER BY p.id DESC LIMIT 20", (code,)).fetchall()
         page_predictions = connection.execute("SELECT p.target_draw_id,s.result AS score FROM predictions p LEFT JOIN scores s ON s.prediction_id=p.id WHERE p.game_code=? AND p.target_draw_id IN (SELECT draw_id FROM draws WHERE game_code=? AND (? IS NULL OR draw_id<?) ORDER BY draw_id DESC LIMIT ?)", (code, code, before, before, limit)).fetchall()
         state = connection.execute("SELECT * FROM crawl_state WHERE game_code=?", (code,)).fetchone()
         active = connection.execute("SELECT id,status,error,result FROM jobs WHERE kind='crawl' AND json_extract(payload,'$.game')=? ORDER BY id DESC LIMIT 1", (code,)).fetchone()
@@ -175,7 +175,15 @@ def workspace(code, before=None, limit=20):
         eligible = training_history(code, connection, include_crawled=True)
         usable = len(eligible)
     records = [unpack(row) for row in raw]
-    prediction_items = [dict(row) | {"payload": json.loads(row["payload"]), "score": json.loads(row["score"]) if row["score"] else None} for row in predictions]
+    prediction_items = []
+    for row in predictions:
+        try:
+            blocker = None if row["score"] else scoring_blocker(row)
+        except (ValueError, TypeError, KeyError, OverflowError):
+            blocker = "invalid_prediction"
+        prediction_items.append(dict(row) | {"payload": json.loads(row["payload"]),
+                                            "score": json.loads(row["score"]) if row["score"] else None,
+                                            "scoring_status": "scored" if row["score"] else blocker or "pending_scoring"})
     by_draw = {}
     for prediction in page_predictions:
         by_draw.setdefault(prediction["target_draw_id"], []).append({"score": json.loads(prediction["score"]) if prediction["score"] else None})
@@ -206,7 +214,10 @@ def workspace(code, before=None, limit=20):
     return {"game": code, "supported": supported, "crawl_enabled": spec.get("crawl_enabled", False),
             "kind": spec["kind"], "rules_verified": spec["rules_verified"], "counts": {"total": totals[0], "verified": totals[1], "pending": totals[0] - totals[1]},
             "usable_count": usable, "data_policy": "verified_or_crawled",
-            "sync": dict(state) if state else None, "job": dict(active) if active else None,
+            "sync": dict(state) if state else None,
+            "job": dict(active) | {"result": json.loads(active["result"]) if active["result"] else None} if active else None,
+            "sync_source": {"name": spec.get("crawler", {}).get("latest_source", spec.get("crawler", {}).get("source")),
+                            "url": spec.get("crawler", {}).get("latest_url", spec.get("crawler", {}).get("list_url"))},
             "next_at": target_at,
             "model": {"id": model["id"], "parent_version_id": model["parent_version_id"], "method": model["method"], "created_at": model["created_at"], "trained_through": model["trained_through_draw_id"], **parameters} if model else None,
             "training": dict(training) if training else None, "model_versions": [dict(version) for version in versions],

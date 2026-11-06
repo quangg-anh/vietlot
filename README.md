@@ -36,7 +36,7 @@ but this release still does not place or settle simulated bets. EV always return
 1. Copy `.env.example` to `.env` and replace `API_KEY` with a long random secret.
    Generate one with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 2. Run `docker compose up --build -d`.
-3. Open `http://localhost` or the direct local API at `http://127.0.0.1:8000/docs`.
+3. Open `http://localhost` or the direct local API at `http://127.0.0.1:3399/docs`.
 4. For HTTPS set `SITE_ADDRESS` to your public domain, configure DNS, and expose
    ports 80/443. Caddy obtains certificates automatically.
 
@@ -52,8 +52,10 @@ on a deployment holding needed history.
 python -m venv .venv
 # Activate .venv using your shell, then:
 python -m pip install -r backend/requirements-dev.txt
-# Set API_KEY in the environment; .env is loaded by Compose, not Python itself.
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --workers 1
+# Configure API_KEY in .env; the launcher loads it automatically.
+python -m backend.app
+# Default: 127.0.0.1:3399, one worker. Explicit alternative:
+# python -m uvicorn backend.app.main:app --env-file .env --host 127.0.0.1 --port 3399 --workers 1
 python -m unittest discover -s backend/tests -v
 python -m coverage run --source=backend/app -m unittest discover -s backend/tests
 python -m coverage report --show-missing
@@ -63,10 +65,47 @@ No Node.js build, Redis, PostgreSQL, Celery, NumPy, pandas or XGBoost required.
 Game files use JSON syntax, a valid YAML subset, to avoid a separate YAML parser.
 SQLite path defaults to `data/research.sqlite3`; override `DATABASE_PATH` if needed.
 
+## Linux / aaPanel ASGI startup
+
+Install `requirements.txt` using the service's Python interpreter, then run:
+
+```sh
+PYTHON_BIN=/www/server/pyporject_evn/vietlot/bin/python sh start-linux.sh
+```
+
+Stop the existing aaPanel Gunicorn project first. Configure the process manager
+to use this command instead of its generated sync/gthread command. The launcher
+explicitly selects the ASGI worker, one process, and `127.0.0.1:3399`; Nginx must
+proxy to that address. It loads `.env` through `gunicorn.conf.py`. Do not run two
+instances. `FastAPI.__call__() missing ... send` indicates a WSGI worker is still
+being used. On Windows, continue using `python -m backend.app`.
+
 ## Automatic result crawling
 
+For production, install runtime dependencies with the same Python interpreter
+used to start Uvicorn, from the repository root:
+
+```sh
+python3.12 -m pip install -r requirements.txt
+python3.12 -m pip check
+python3.12 -c "from bs4 import BeautifulSoup; import backend.app.main"
+```
+
+Restart the backend after installation. If the service uses a virtual environment,
+replace `python3.12` with that environment's Python executable in all commands.
+The `bs4` import comes from `beautifulsoup4`, already pinned in
+`backend/requirements.txt`; installing dependencies into another Python environment
+does not fix the running service.
+
 Power 6/55 and Mega 6/45 fetch public results from `xoso.com.vn`.
-Lotto 5/35, Max 3D and Max 3D Pro use the `ketquaxoso.net` adapter.
+Lotto 5/35 fetches latest results from Minh Chinh's live Lotto page, with
+`ketquaxoso.net` retained for paginated history and as a fallback if the latest
+source cannot be fetched or parsed. Each snapshot records its actual source;
+fallbacks are logged and returned as `source_warning`, never silently relabeled.
+The Minh Chinh parser requires an explicit draw ID, date, slot, five main balls
+and a separate special ball; prize-table decorations are ignored. A latest-page
+sync does not mark historical backfill complete or reset its page cursor.
+Max 3D and Max 3D Pro use the `ketquaxoso.net` adapter.
 Lotto retains both daily slots and its separate special number. Max games retain
 all prize groups as three-character strings, including leading zeroes.
 These imports remain unverified; rule/prize review gates are unchanged.
@@ -82,6 +121,18 @@ After backfill, latest-result sync runs 45 and 60 minutes after each configured
 draw slot, using each game's timezone and draw weekdays (including both Lotto
 slots). Existing interval timers are rescheduled outside these windows. Failed
 requests retain their retry backoff; manual Sync still runs immediately.
+If the worker misses a persisted post-draw sync time (for example during a
+restart), it queues one catch-up sync instead of skipping to the next draw.
+The dashboard shows the next sync time, queued/running status, history page,
+and whether the worker or schedule is disabled. Worker logs report automatic
+queueing and each crawl's start/completion with added and unchanged counts.
+After checking the latest page, the crawler compares stored results with the
+latest configured draw slot that ended at least 45 minutes ago. If results are
+still missing, it records `source_stale`, the source's latest draw ID and the
+expected slot, and retries within 15 minutes, including outside normal sync
+windows. The dashboard warns that the source is behind. A successful HTTP
+request alone does not mean the latest draw has been published. Existing
+results are retained; missing results are never fabricated.
 Set `AUTO_SYNC=0` to turn schedules off on startup;
 a manual Sync explicitly enables the selected game's schedule again.
 `DISABLE_RUNNER=1` disables both job execution and automatic model updates.
@@ -203,7 +254,7 @@ CSV is capped at 10 MB / 50,000 rows. One bad row rolls back the whole batch.
 ID gaps are reported as ranges; they are never filled with fabricated results.
 
 ```sh
-curl -X POST http://127.0.0.1:8000/api/import/csv \
+curl -X POST http://127.0.0.1:3399/api/import/csv \
   -H "X-API-Key: YOUR_API_KEY" -F "file=@draws.csv"
 ```
 
@@ -297,3 +348,61 @@ against a temporary SQLite database. Desktop and 390px mobile layouts and the
 simulator/auth-error flow were manually checked in a browser. Docker Compose
 configuration validates; image build/runtime was not tested locally because the
 Docker daemon was unavailable. GitHub Actions still needs to run remotely.
+
+### Crawl and scoring regression checks
+
+Run `python -m unittest discover -s backend/tests -q` from the repository root.
+The regression fixtures cover all five Minh Chinh game layouts, backup sources,
+incomplete live results, immediate scoring after ingestion, and draw #959.
+Lotto 5/35 displays main matches and the special-number match separately;
+history summarizes one best ticket, never combines matches from different tickets.
+Missing predicted special numbers have unknown scores, not automatic misses.
+Pending predictions expose a scoring status for missing results, ineligible
+sources, mismatched draw slots, invalid lock times, or ledger hash mismatches.
+Predictions and stored scores remain immutable. Crawler data is not independent
+verification and match counts are not prize or payout calculations.
+
+Draw ingestion checks both game/draw ID and game/date/slot before inserting.
+If another source uses a different ID for the same slot and identical main,
+special, and digit results, the stored draw ID and metadata remain unchanged.
+The new snapshot observation references that stored ID; the import audit records
+the source-to-stored ID mapping. Predictions and scores are never renumbered.
+Unresolved differences or an ID already assigned to another slot stop the entire
+page with an explicit conflict; history progress is retained for retry.
+This does not establish which source's draw numbering is authoritative.
+
+Mega history can resolve a source date error using the configured Minh Chinh
+reconcile_url. On conflict, it fetches the daily page for the disputed date and
+requires an exact match for the incoming draw ID and numbers on a different
+date, plus corroboration of every stored conflicting record. Only the incoming
+row is replaced; existing draws, predictions and scores are not rewritten.
+The corroborating result for the disputed slot is also retained. Corrected rows
+reference the Minh Chinh snapshot, not the erroneous source snapshot, and the
+import audit and job result retain both versions and their snapshot IDs.
+Historical Minh Chinh pages without ball IDs are accepted only in the explicit
+historical parser mode; main/special classes and ball counts remain validated.
+Reconciliation is limited to three attempts per page. Missing, incomplete or
+contradictory evidence leaves the entire page and its history cursor unchanged.
+This is a source-backed date correction, not official verification: newly
+imported results remain unverified. Deploy both crawler modules and the updated
+Mega game configuration to enable this path. No database deletion is needed.
+
+Schedule validation failures are reconciled before persistence when a separate
+configured source confirms the exact draw ID and full result on a valid date
+and slot. CSV imports still use strict schedule validation. Unresolved errors
+include game, draw ID, date, weekday, slot, expected schedule, source URL and
+snapshot ID. No historical schedule exceptions are inferred automatically.
+Deploy the updated ETL, crawler and source parser modules together.
+
+For a conflict, inspect both stored results and retained unprocessed source
+snapshots without changing the database:
+
+```bash
+python -m backend.app.inspect_draw --database data/research.sqlite3 --game mega645 --date 2019-11-06
+```
+
+Use the production DATABASE_PATH as --database if it differs from this example.
+The report includes nearby stored draws and matching results from the last five
+unprocessed snapshots. New conflict logs also include both result payloads,
+source URLs and the snapshot ID. Do not delete or renumber draws from the error
+message alone: establish which result is correct before repairing stored data.

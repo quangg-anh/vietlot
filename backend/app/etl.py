@@ -43,6 +43,28 @@ def training_history(code, connection=None, include_crawled=False, before=None):
 def training_fingerprint(rows, spec, revision, policy="verified_or_crawled"):
     return hashlib.sha256(encode([rows, spec, policy, revision]).encode()).hexdigest()
 
+class DrawScheduleError(ValueError):
+    def __init__(self, item, spec, slot, draw_date):
+        self.item = dict(item)
+        super().__init__("Draw date/slot does not match configured schedule: "
+                         f"game={spec['code']} draw_id={item['draw_id']} date={draw_date.isoformat()} "
+                         f"weekday={draw_date.strftime('%A')} slot={slot!r} "
+                         f"expected_weekdays={spec['weekdays']} expected_slots={spec['slots']} "
+                         f"source_url={item.get('source_url', '')}")
+
+def validate_source(item, spec):
+    approval = spec.get("_source_date_corrections", {}).get(int(item["draw_id"]))
+    if approval is None:
+        return validate(item)
+    confirmed = approval["corrected"]
+    corrected = validate(item | {"draw_date": confirmed["draw_date"], "draw_slot": confirmed["draw_slot"],
+                                 "source_url": confirmed["source_url"]})
+    fields = ("game_code", "draw_id", "draw_date", "draw_slot", "main", "special", "digits")
+    if any(corrected[field] != confirmed[field] for field in fields):
+        raise ValueError("Source row does not match corroborating result")
+    return corrected | {"_evidence_snapshot_id": approval["evidence_snapshot_id"],
+                        "_source_date_correction": approval | {"original": dict(item)}}
+
 def validate(item):
     if any(value is None or not isinstance(value, str) for value in item.values()):
         raise ValueError("CSV row has missing fields or extra columns")
@@ -60,7 +82,7 @@ def validate(item):
     if len(spec["slots"]) == 1 and not slot:
         slot = spec["slots"][0]
     if slot not in spec["slots"] or draw_date.weekday() not in spec["weekdays"]:
-        raise ValueError("Draw date/slot does not match configured schedule")
+        raise DrawScheduleError(item, spec, slot, draw_date)
     main, digits, special = [], {}, None
     if spec["kind"] == "pick_k":
         if item.get("main"):

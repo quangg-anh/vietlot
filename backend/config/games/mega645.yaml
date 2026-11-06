@@ -27,13 +27,16 @@
   "status": "draft: official rules and schedule require operator review",
   "sources": {
     "primary": "https://vietlott.vn",
-    "secondary": "https://xoso.com.vn/xo-so-tu-chon-mega-645.html"
+    "secondary": "https://www.minhchinh.com/truc-tiep-xo-so-tu-chon-mega-645.html"
   },
   "crawl_enabled": true,
   "crawler": {
     "source": "xoso",
+    "reconcile_url": "https://www.minhchinh.com/xs-mega-645-ket-qua-mega-645-ngay-{date}.html",
     "list_url": "https://xoso.com.vn/xo-so-tu-chon-mega-645.html",
     "history_url": "https://xoso.com.vn/XSDienToan/GetMoreMega645",
-    "interval_minutes": 60
+    "interval_minutes": 60,
+    "latest_source": "minhchinh",
+    "latest_url": "https://www.minhchinh.com/truc-tiep-xo-so-tu-chon-mega-645.html"
   }
 }

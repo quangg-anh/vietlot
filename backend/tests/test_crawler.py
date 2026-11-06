@@ -177,7 +177,9 @@ class CrawlIntegrationTests(unittest.TestCase):
         job = crawler.queue_crawl("power655", mode, pages)
         fake = Mock()
         fake.fetch.side_effect = responses or [POWER]
-        with patch.object(crawler, "Fetcher", return_value=fake):
+        spec = game("power655")
+        spec = spec | {"crawler": spec["crawler"] | {"latest_source": spec["crawler"]["source"], "latest_url": SOURCE}}
+        with patch.object(crawler, "Fetcher", return_value=fake), patch.object(crawler, "crawl_spec", return_value=spec):
             for _ in range(5):
                 jobs.run_one()
                 current = self.client.get(f"/api/jobs/{job['job_id']}").json()

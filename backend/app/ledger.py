@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import secrets
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -89,41 +90,84 @@ def lock(code, target_draw_id, target_at, method, count, once=False, include_cra
     return {"id": identity, "payload_hash": hashed, "payload": json.loads(payload), "locked_at": locked, "disclaimer": DISCLAIMER}
 
 
-def score_pending():
-    scored = 0
+SCORING_COLUMNS = (
+    "d.main AS actual,d.special AS actual_special,d.digits AS actual_digits,"
+    "d.draw_date,d.draw_slot,d.verified AS actual_verified,d.source_url AS actual_source_url,"
+    "EXISTS(SELECT 1 FROM crawl_observations c WHERE c.game_code=p.game_code "
+    "AND c.draw_id=p.target_draw_id) AS actual_crawled"
+)
+
+
+def scoring_blocker(row, current=None):
+    target = datetime.fromisoformat(row["target_at"])
+    locked = datetime.fromisoformat(row["locked_at"])
+    if target.tzinfo is None or locked.tzinfo is None or locked >= target:
+        return "invalid_lock_time"
+    if digest(row["game_code"], row["target_draw_id"], row["model_version_id"], row["payload"], row["locked_at"]) != row["payload_hash"]:
+        return "ledger_hash_mismatch"
+    if target > (current or datetime.now(timezone.utc)):
+        return "waiting_draw"
+    if row["actual"] is None:
+        return "waiting_result"
+    payload = json.loads(row["payload"])
+    if not row["actual_verified"] and (payload.get("data_policy") != "verified_or_crawled" or not row["actual_crawled"]):
+        return "source_not_eligible"
+    scheduled = target.astimezone(ZoneInfo(game(row["game_code"])["timezone"]))
+    if row["draw_date"] != scheduled.date().isoformat() or row["draw_slot"] != scheduled.strftime("%H:%M"):
+        return "result_slot_mismatch"
+    return None
+
+
+def score_pending(code=None):
+    scored, errors = 0, []
+    log = logging.getLogger(__name__)
     with connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
         pending = connection.execute(
-            "SELECT p.*,d.main AS actual,d.digits AS actual_digits,d.draw_date,d.draw_slot,d.verified AS actual_verified FROM predictions p "
+            "SELECT p.*," + SCORING_COLUMNS + " FROM predictions p "
             "JOIN draws d ON d.game_code=p.game_code AND d.draw_id=p.target_draw_id "
-            "LEFT JOIN scores s ON s.prediction_id=p.id WHERE s.prediction_id IS NULL").fetchall()
+            "LEFT JOIN scores s ON s.prediction_id=p.id WHERE s.prediction_id IS NULL "
+            "AND (? IS NULL OR p.game_code=?) ORDER BY p.id", (code, code)).fetchall()
         for row in pending:
-            payload = json.loads(row["payload"])
-            if not row["actual_verified"]:
-                if payload.get("data_policy") != "verified_or_crawled" or not connection.execute(
-                    "SELECT 1 FROM crawl_observations WHERE game_code=? AND draw_id=?", (row["game_code"], row["target_draw_id"])).fetchone():
+            connection.execute("SAVEPOINT score_prediction")
+            try:
+                blocker = scoring_blocker(row)
+                if blocker:
+                    if blocker not in ("waiting_draw", "waiting_result", "source_not_eligible"):
+                        errors.append({"prediction_id": row["id"], "reason": blocker})
+                        log.warning("Scoring blocked: prediction=%s game=%s reason=%s", row["id"], row["game_code"], blocker)
                     continue
-            if datetime.fromisoformat(row["target_at"]) > datetime.now(timezone.utc):
-                continue
-            spec = game(row["game_code"])
-            scheduled = datetime.fromisoformat(row["target_at"]).astimezone(ZoneInfo(spec["timezone"]))
-            if row["draw_date"] != scheduled.date().isoformat() or row["draw_slot"] != scheduled.strftime("%H:%M"):
-                continue
-            if digest(row["game_code"], row["target_draw_id"], row["model_version_id"], row["payload"], row["locked_at"]) != row["payload_hash"]:
-                raise ValueError("Ledger hash mismatch")
-            payload, actual = json.loads(row["payload"]), json.loads(row["actual"])
-            if spec["kind"] == "digits":
-                result = digit_model.score(payload["digit_probabilities"], payload["tickets"], json.loads(row["actual_digits"]), spec)
-            else:
-                result = losses(payload["probabilities"], actual)
-                result["hits"] = [len(set(ticket["main"]) & set(actual)) for ticket in payload["tickets"]]
-                result["baseline"] = losses(probabilities([], spec, "uniform"), actual)
-            result["source_verified"] = bool(row["actual_verified"])
-            result["data_policy"] = payload.get("data_policy", "verified_only")
-            connection.execute("INSERT INTO scores VALUES(?,?,?)", (row["id"], encode(result), now()))
-            connection.execute(
-                "INSERT INTO feedback_events(prediction_id,model_version_id,draw_id,action,detail,at) VALUES(?,?,?,?,?,?)",
-                (row["id"], row["model_version_id"], row["target_draw_id"], "eligible_for_retraining" if spec["kind"] == "digits" else "skipped",
-                 encode({"reason": "Actual draw enters the next automatic refit; no promotion or profit claim" if spec["kind"] == "digits" else "Automatic model promotion disabled until independent validation is implemented", "metrics": result}), now()))
-            scored += 1
-    return {"scored": scored}
+                payload, actual = json.loads(row["payload"]), json.loads(row["actual"])
+                spec = game(row["game_code"])
+                if spec["kind"] == "digits":
+                    actual_digits = json.loads(row["actual_digits"])
+                    result = digit_model.score(payload["digit_probabilities"], payload["tickets"], actual_digits, spec)
+                    result["matched_digits"] = [[value for value in ticket["digits"] if value in actual_digits[ticket["group"]]] for ticket in payload["tickets"]]
+                else:
+                    if len(payload["probabilities"]) != spec["number_max"]:
+                        raise ValueError("Prediction probability vector has incorrect size")
+                    result = losses(payload["probabilities"], actual)
+                    result["hits"] = [len(set(ticket["main"]) & set(actual)) for ticket in payload["tickets"]]
+                    result["matched_numbers"] = [sorted(set(ticket["main"]) & set(actual)) for ticket in payload["tickets"]]
+                    result["ticket_width"] = spec["pick_count"]
+                    result["special_hits"] = [ticket.get("special") == row["actual_special"] if row["actual_special"] is not None and ticket.get("special") is not None else None for ticket in payload["tickets"]]
+                    result["special_scope"] = "separate_number" if row["game_code"] == "lotto535" else "reference_only"
+                    result["metric_scope"] = "main_number_matches; not_payouts"
+                    result["baseline"] = losses(probabilities([], spec, "uniform"), actual)
+                result["source_verified"] = bool(row["actual_verified"])
+                result["source_url"] = row["actual_source_url"]
+                result["data_policy"] = payload.get("data_policy", "verified_only")
+                connection.execute("INSERT INTO scores VALUES(?,?,?)", (row["id"], encode(result), now()))
+                connection.execute(
+                    "INSERT INTO feedback_events(prediction_id,model_version_id,draw_id,action,detail,at) VALUES(?,?,?,?,?,?)",
+                    (row["id"], row["model_version_id"], row["target_draw_id"], "eligible_for_retraining" if spec["kind"] == "digits" else "skipped",
+                     encode({"reason": "Actual draw enters the next automatic refit; no promotion or profit claim" if spec["kind"] == "digits" else "Automatic model promotion disabled until independent validation is implemented", "metrics": result}), now()))
+                scored += 1
+                log.info("Prediction scored: game=%s draw=%s prediction=%s hits=%s", row["game_code"], row["target_draw_id"], row["id"], result["hits"])
+            except (ValueError, KeyError, TypeError, IndexError, ZeroDivisionError, OverflowError) as exc:
+                connection.execute("ROLLBACK TO score_prediction")
+                errors.append({"prediction_id": row["id"], "reason": str(exc)})
+                log.exception("Cannot score prediction %s; other predictions will continue", row["id"])
+            finally:
+                connection.execute("RELEASE score_prediction")
+    return {"scored": scored} | ({"errors": errors} if errors else {})

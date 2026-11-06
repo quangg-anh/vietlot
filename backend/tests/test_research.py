@@ -326,8 +326,9 @@ class ResearchTests(unittest.TestCase):
 
     def test_runner_start_stop_and_score_job(self):
         runner = jobs.Runner()
-        runner.start()
-        runner.close()
+        with patch.dict(os.environ, {"AUTO_SYNC": "0"}):
+            runner.start()
+            runner.close()
         self.assertFalse(runner.thread.is_alive())
         identity = jobs.enqueue("score", {})
         while jobs.run_one():

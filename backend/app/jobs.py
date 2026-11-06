@@ -43,7 +43,9 @@ def run_one(stop=None):
                 connection.execute("INSERT OR IGNORE INTO backtest_runs(job_id,game_code,config,metrics,created_at) VALUES(?,?,?,?,?)",
                                    (row["id"], payload["game"], encode({key: value for key, value in payload.items() if key != "rows"}), encode(result), now()))
         elif row["kind"] == "crawl":
+            log.info("Sync started: game=%s job=%s mode=%s", payload["game"], row["id"], payload["mode"])
             result = run_crawl(payload, row["id"], stop=stop)
+            log.info("Sync completed: game=%s job=%s pages=%s added=%s unchanged=%s", payload["game"], row["id"], result["pages_completed"], result["added"], result["unchanged"])
         else:
             result = score_pending()
         with connect() as connection:
@@ -69,6 +71,7 @@ class Runner:
     def start(self):
         recover()
         autopilot.enable_sync()
+        log.info("Background sync worker starting; polling scheduled jobs every second")
         self.thread.start()
         self.model_thread.start()
 

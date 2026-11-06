@@ -32,13 +32,15 @@
   "status": "draft: official rules and schedule require operator review",
   "sources": {
     "primary": "https://vietlott.vn",
-    "secondary": "https://ketquaxoso.net/max-3d-pro.html"
+    "secondary": "https://www.minhchinh.com/truc-tiep-xo-so-tu-chon-max3d-pro.html"
   },
   "crawl_enabled": true,
   "crawler": {
     "source": "ketquaxoso",
     "list_url": "https://ketquaxoso.net/max-3d-pro.html",
     "history_url": "https://ketquaxoso.net/max-3d-pro-p{page}.html",
-    "interval_minutes": 60
+    "interval_minutes": 60,
+    "latest_source": "minhchinh",
+    "latest_url": "https://www.minhchinh.com/truc-tiep-xo-so-tu-chon-max3d-pro.html"
   }
 }

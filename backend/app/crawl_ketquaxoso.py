@@ -6,7 +6,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from .crawl_http import CrawlError, allowed_url
-from .etl import validate
+from .etl import validate_source
 
 
 def parse_results(raw, spec, url):
@@ -63,7 +63,7 @@ def parse_results(raw, spec, url):
                 incomplete += 1
                 continue
             item["digits"] = json.dumps(digits)
-        row = validate(item)
+        row = validate_source(item, spec)
         previous = identities.get(row["draw_id"])
         if previous is not None and previous != row:
             raise CrawlError("Conflicting draw IDs within source page")

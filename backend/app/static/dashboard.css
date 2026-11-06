@@ -1273,6 +1273,8 @@ dialog input {
   .theme-toggle { padding: 8px 10px; }
 }
 
+.ball.matched { outline: 2px solid #36ba91; outline-offset: 2px; }
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation: none !important; transition: none !important; }

@@ -106,7 +106,7 @@ class AutopilotTests(unittest.TestCase):
     def test_complete_history_reschedules_legacy_timer_outside_result_window(self):
         crawler.set_schedule("power655", True)
         with connect() as connection:
-            connection.execute("UPDATE crawl_state SET history_complete=1,next_due='2000-01-01'")
+            connection.execute("UPDATE crawl_state SET history_complete=1,next_due='2000-01-01',last_success_at='2026-10-19T12:00:00+00:00'")
         with patch.object(crawler, "datetime") as clock:
             clock.now.return_value = datetime(2026, 10, 20, 10, tzinfo=timezone.utc)
             clock.fromisoformat.side_effect = datetime.fromisoformat
@@ -114,6 +114,36 @@ class AutopilotTests(unittest.TestCase):
         with connect() as connection:
             self.assertEqual(connection.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
         self.assertEqual(crawler.status("power655")["state"]["next_due"], "2026-10-20T11:45:00+00:00")
+
+    def test_scheduler_catches_up_missed_result_window_after_restart(self):
+        crawler.set_schedule("power655", True)
+        with connect() as connection:
+            connection.execute("UPDATE crawl_state SET history_complete=1,next_due='2026-10-20T11:45:00+00:00',last_success_at='2026-10-18T12:00:00+00:00'")
+        with patch.object(crawler, "datetime") as clock:
+            clock.now.return_value = datetime(2026, 10, 20, 16, tzinfo=timezone.utc)
+            clock.fromisoformat.side_effect = datetime.fromisoformat
+            crawler.queue_due()
+            crawler.queue_due()
+        with connect() as connection:
+            rows = connection.execute("SELECT payload FROM jobs WHERE kind='crawl'").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(json.loads(rows[0]["payload"])["mode"], "latest")
+
+    def test_scheduler_syncs_once_when_history_complete_but_never_succeeded(self):
+        crawler.set_schedule("power655", True)
+        with connect() as connection:
+            connection.execute("UPDATE crawl_state SET history_complete=1,next_due='2000-01-01'")
+        crawler.queue_due()
+        with connect() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM jobs WHERE kind='crawl'").fetchone()[0], 1)
+
+    def test_scheduler_preserves_future_retry_backoff(self):
+        crawler.set_schedule("power655", True)
+        with connect() as connection:
+            connection.execute("UPDATE crawl_state SET next_due='2099-01-01',failures=2")
+        crawler.queue_due()
+        with connect() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
 
     def test_no_training_from_unverified_draws(self):
         etl.import_csv(csv_bytes([draw(verified="false")]))

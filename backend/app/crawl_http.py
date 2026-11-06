@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 
 USER_AGENT = "VietlottResearchBot/2.1 (+https://github.com/quangg-anh/vietlot; public results research)"
-ALLOWED_HOSTS = {"xoso.com.vn", "ketquaxoso.net"}
+ALLOWED_HOSTS = {"xoso.com.vn", "ketquaxoso.net", "www.minhchinh.com"}
 MAX_BYTES = 2_000_000
 _request_lock = threading.Lock()
 _last_request = {}

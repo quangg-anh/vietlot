@@ -45,13 +45,21 @@ async function request(path, options = {}) {
   return body;
 }
 
-function balls(ticket) {
+function balls(ticket, score = null, index = 0) {
   const group = node("div", "balls");
-  for (const value of ticket.main || []) group.append(node("span", "ball", String(value).padStart(2, "0")));
+  for (const value of ticket.main || []) {
+    const ball = node("span", "ball", String(value).padStart(2, "0"));
+    if (score?.matched_numbers?.[index]?.includes(value)) {
+      ball.classList.add("matched");
+      ball.title = "Trùng số chính";
+    }
+    group.append(ball);
+  }
   for (const value of Array.isArray(ticket.digits) ? ticket.digits : []) group.append(node("span", "ball digit-ball", value));
   if (ticket.special !== null && ticket.special !== undefined) {
     const special = node("span", "ball special", String(ticket.special).padStart(2, "0"));
-    special.title = "Số đặc biệt tham khảo; không phải số chính chọn trên vé";
+    special.title = gameCode === "lotto535" ? "Số đặc biệt; chấm riêng với số chính" : "Số đặc biệt tham khảo; không phải số chính chọn trên vé";
+    if (score?.special_hits?.[index]) special.classList.add("matched");
     group.append(node("span", "ball-divider"), special);
   }
   return group;
@@ -150,6 +158,14 @@ function renderPredictions(data) {
     : "Tự lưu trước giờ quay khi đủ kết quả kỳ trước; kết quả mới vào lần học lại tiếp theo. Không sửa dự đoán cũ.";
 }
 
+function scoreLabel(score, index, width) {
+  let label = `${score.hits[index]} / ${score.ticket_width || width} ${gameCode.startsWith("max3d") ? "số" : "số chính"}`;
+  if (gameCode === "lotto535" && score.special_hits?.[index] != null) {
+    label += ` · ĐB ${score.special_hits[index] ? "1" : "0"} / 1`;
+  }
+  return label;
+}
+
 function renderHistory(data) {
   const body = element("results-body");
   body.replaceChildren();
@@ -165,9 +181,11 @@ function renderHistory(data) {
     }
     const scored = draw.predictions.filter(item => item.score);
     const hits = scored.flatMap(item => item.score.hits || []);
+    const best = scored.flatMap(item => (item.score.hits || []).map((hit, index) => ({score: item.score, index, hit})))
+      .sort((left, right) => right.hit - left.hit || Number(Boolean(right.score.special_hits?.[right.index])) - Number(Boolean(left.score.special_hits?.[left.index])))[0];
     const status = node("td");
     status.append(node("span", `data-label${draw.verified || draw.crawled ? "" : " pending"}`, draw.verified ? "Đã đối chiếu" : draw.crawled ? "Crawl tự động" : "CSV chưa duyệt"));
-    row.append(node("td", "draw-id", `#${draw.draw_id}`), node("td", "muted", `${dateFormat.format(new Date(`${draw.draw_date}T12:00:00+07:00`))} ${draw.draw_slot}`), result, node("td", hits.length ? "" : "muted", hits.length ? `${Math.max(...hits)} / ${data.baseline?.pick_count} số` : "Chưa có điểm"), status);
+    row.append(node("td", "draw-id", `#${draw.draw_id}`), node("td", "muted", `${dateFormat.format(new Date(`${draw.draw_date}T12:00:00+07:00`))} ${draw.draw_slot}`), result, node("td", hits.length ? "" : "muted", best ? scoreLabel(best.score, best.index, data.baseline?.pick_count) : "Chưa có điểm"), status);
     body.append(row);
   }
   element("history-count").textContent = `${data.history.length} kỳ trên trang · ${numberFormat.format(data.counts.total)} kỳ đã lưu`;
@@ -180,10 +198,11 @@ function renderHistory(data) {
     prediction.payload.tickets.forEach((ticket, index) => {
       const row = node("tr");
       const numbers = node("td");
-      numbers.append(balls(ticket));
+      numbers.append(balls(ticket, prediction.score, index));
       const state = node("td");
-      state.append(node("span", `data-label${prediction.score ? "" : " pending"}`, prediction.score ? (prediction.score.source_verified === false ? "Đã chấm · nguồn crawl" : "Đã đối chiếu") : "Chờ kết quả"));
-      row.append(node("td", "draw-id", `#${prediction.target_draw_id} · bộ ${index + 1}`), node("td", "muted", timeFormat.format(new Date(prediction.locked_at))), numbers, node("td", "", prediction.score ? `${prediction.score.hits[index]} / ${prediction.score.ticket_width || data.baseline?.pick_count}` : "—"), state);
+      const pendingLabel = ({waiting_draw: "Chưa đến giờ quay", waiting_result: "Chờ kết quả", source_not_eligible: "Nguồn chưa đủ điều kiện", result_slot_mismatch: "Lỗi: kết quả lệch ngày/giờ", invalid_lock_time: "Lỗi: thời điểm khóa không hợp lệ", ledger_hash_mismatch: "Lỗi: hash dự đoán không khớp", invalid_prediction: "Lỗi: dữ liệu dự đoán", pending_scoring: "Chờ chấm điểm"})[prediction.scoring_status] || "Chờ kết quả";
+      state.append(node("span", `data-label${prediction.score ? "" : " pending"}`, prediction.score ? (prediction.score.source_verified === false ? "Đã chấm · nguồn crawl" : "Đã đối chiếu") : pendingLabel));
+      row.append(node("td", "draw-id", `#${prediction.target_draw_id} · bộ ${index + 1}`), node("td", "muted", timeFormat.format(new Date(prediction.locked_at))), numbers, node("td", "", prediction.score ? scoreLabel(prediction.score, index, data.baseline?.pick_count) : "—"), state);
       predictions.append(row);
     });
   }
@@ -237,6 +256,15 @@ function render(data) {
   element("stat-next").textContent = data.next_at ? timeFormat.format(new Date(data.next_at)) : "Chưa hỗ trợ";
   element("next-caption").textContent = "Theo lịch cấu hình của trò chơi";
   element("last-sync").textContent = data.sync?.last_success_at ? `Sync gần nhất: ${timeFormat.format(new Date(data.sync.last_success_at))}` : "Chưa có lần sync thành công";
+  const syncDetails = [];
+  const sourceName = {minhchinh: "Minh Chính", ketquaxoso: "Ketquaxoso", xoso: "Xoso"}[data.sync_source?.name] || data.sync_source?.name;
+  if (sourceName) syncDetails.push(`Nguồn kỳ mới: ${sourceName}`);
+  if (!data.runner_enabled) syncDetails.push("Worker tắt: bỏ DISABLE_RUNNER=1 rồi restart backend");
+  else if (!automatic) syncDetails.push("Lịch tự động tắt: kiểm tra AUTO_SYNC=1");
+  else if (active) syncDetails.push(data.job.status === "queued" ? "Đã xếp hàng, chờ worker" : "Đang tải kết quả từ nguồn");
+  else if (data.sync?.next_due) syncDetails.push(`Sync kế tiếp: ${timeFormat.format(new Date(data.sync.next_due))}`);
+  if (automatic && !data.sync.history_complete) syncDetails.push(`Lịch sử: trang ${data.sync.next_history_page || 1}`);
+  element("last-sync").textContent += syncDetails.length ? ` · ${syncDetails.join(" · ")}` : "";
   const button = element("sync-button");
   button.disabled = !data.crawl_enabled || active || syncing;
   button.setAttribute("aria-busy", String(active || syncing));
@@ -250,6 +278,9 @@ function render(data) {
   element("automation-note").textContent = "Kết quả crawl được dùng trực tiếp cho model, có lưu nguồn. Đây là dữ liệu một nguồn, không phải đối chiếu độc lập.";
   if (data.job?.status === "failed") showMessage(`Lần sync gần nhất chưa hoàn tất: ${data.job.error || "Lỗi nguồn dữ liệu"}. Hệ thống giữ tiến độ và thử lại theo lịch.`, true);
   else if (active) showMessage(data.runner_enabled ? "Đang đồng bộ ở nền. Có thể tiếp tục xem bảng; kết quả tự cập nhật." : "Yêu cầu đã xếp hàng nhưng worker đang tắt (DISABLE_RUNNER=1). Cần bật worker để xử lý.");
+  else if (data.sync?.last_error?.startsWith("Source stale:")) showMessage(`Nguồn chưa có kết quả mới. ${data.sync.last_error}. Hệ thống sẽ tự thử lại; không tự tạo kết quả.`, true);
+  else if (data.job?.result?.source_warning) showMessage(`Đang dùng nguồn dự phòng: ${data.job.result.source_warning}`, true);
+  else if (data.job?.result?.source_corrections?.length) showMessage(`Đã đối chiếu Minh Chinh và sửa ngày nguồn cho ${data.job.result.source_corrections.length} kỳ. Không ghi đè kết quả đã lưu.`);
   else if (!syncing) showMessage("");
   renderLearning(data);
   renderPredictions(data);
