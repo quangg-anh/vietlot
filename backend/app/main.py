@@ -25,8 +25,8 @@ from .funds import create_funds
 from .games import game, games
 from .jobs import Runner, enqueue
 from .lab import illusion, randomness
-from .ledger import lock
-from . import autopilot, crawler
+from .ledger import frequency_window, lock, prepare_adaptive
+from . import autopilot, crawler, ensemble, llm, tickets
 
 
 logging.basicConfig(level=logging.INFO)
@@ -98,7 +98,7 @@ class StrictModel(BaseModel):
 
 class BacktestRequest(StrictModel):
     game: str = "power655"
-    method: Literal["uniform", "bayesian"] = "bayesian"
+    method: Literal["uniform", "bayesian", "adaptive"] = "adaptive"
     min_train: int = Field(default=100, ge=10, le=10000)
     test_draws: int = Field(default=100, ge=1, le=1000)
     seed: int = Field(default=42, ge=0, le=2**32 - 1)
@@ -107,7 +107,7 @@ class BacktestRequest(StrictModel):
 class PredictRequest(StrictModel):
     target_draw_id: int = Field(gt=0)
     target_at: str
-    method: Literal["uniform", "bayesian"] = "bayesian"
+    method: Literal["uniform", "bayesian", "adaptive"] = "adaptive"
     count: int = Field(default=5, ge=1, le=100)
 
 
@@ -139,7 +139,7 @@ class FundPolicy(StrictModel):
 
 
 class FundRequest(GameRequest):
-    method: Literal["uniform", "bayesian"] = "bayesian"
+    method: Literal["uniform", "bayesian", "adaptive"] = "adaptive"
     initial_balance: int = Field(default=1000000, ge=10000, le=1000000000)
     policy: FundPolicy = Field(default_factory=FundPolicy)
 
@@ -320,6 +320,43 @@ def dashboard(request: Request, code: str = "power655"):
     return templates.TemplateResponse(request=request, name="dashboard.html", context={
         "games": dict(sorted(games().items(), key=lambda entry: (not entry[1].get("crawl_enabled", False), entry[0] != "power655", entry[0]))), "selected": spec, "summary": summary(code),
     })
+
+@app.get("/api/games/{code}/advisor")
+def advisor_status(code: str):
+    game(code)
+    return {"advisor": llm.status(),
+            "effect": "bounded_tilt_before_lock; statistical ensemble remains the base distribution",
+            "disclaimer": DISCLAIMER}
+
+
+@app.post("/api/games/{code}/advisor/preview", dependencies=[Depends(require_key)])
+def advisor_preview(code: str):
+    """One dry run: statistical vector, advisor suggestion, and the tilted result."""
+    spec = game(code)
+    if spec["kind"] != "pick_k":
+        raise ValueError("Advisor preview supports pick_k games only")
+    rows = history(code, include_crawled=True)
+    if not rows:
+        raise ValueError("No eligible history for a preview")
+    fitted = ensemble.estimate(rows, spec)
+    probability = fitted["probabilities"]
+    suggestion = llm.advise(code, spec, rows, probability, frequency_window(rows, spec))
+    tilted, report = (probability, None)
+    if suggestion:
+        tilted, report = ensemble.tilt(probability, suggestion["scores"],
+                                       suggestion["confidence"], suggestion["max_tilt"])
+    order = sorted(range(1, spec["number_max"] + 1), key=lambda number: (-tilted[number - 1], number))
+    return {"game": code, "advisor": llm.status(),
+            "statistical": [{"number": number, "probability": probability[number - 1]}
+                            for number in sorted(range(1, spec["number_max"] + 1),
+                                                 key=lambda number: (-probability[number - 1], number))],
+            "tilted": [{"number": number, "probability": tilted[number - 1],
+                        "delta": tilted[number - 1] - probability[number - 1]} for number in order],
+            "top": order[:spec["pick_count"]], "tilt": report,
+            "suggestion": {key: value for key, value in suggestion.items() if key != "scores"} if suggestion else None,
+            "note": "Advisor chi dieu chinh nho, co gioi han; khong dam bao trung thuong.",
+            "disclaimer": DISCLAIMER}
+
 
 @app.get("/api/games/{code}/workspace")
 def workspace_state(code: str, before: int | None = Query(None, gt=0)):

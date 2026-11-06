@@ -16,7 +16,7 @@ marked verified.
 | Games | Five JSON-compatible YAML config files | Official rule/schedule review required; three newer game imports blocked |
 | ETL | Atomic CSV imports, Power/Mega crawler, compressed raw snapshots, provenance audit, operator review, gap ranges | Official adapters and automatic two-source reconciliation |
 | Statistics | Verified-only frequency/gaps, Monte Carlo frequency tests, Bonferroni within report, illusion simulator | Runs, ACF, pair/digit tests and report-wide trial registry |
-| Models | Automatic source-data Bayesian training, versioned previews and walk-forward evaluation; uniform baseline | Logistic, optional XGBoost, calibration, independent holdout, multiple-model correction |
+| Models | Automatic source-data adaptive ensemble (windowed + recency shrinkage, weights selected past-only), versioned previews, rolling evaluation with a log-loss confidence interval; uniform baseline | Logistic, optional XGBoost, independent untouched holdout, multiple-model correction |
 | Backtest | Walk-forward, sampled random control, Brier/log loss, paired bootstrap CI, input hash | Statistical promotion/edge claims remain disabled |
 | Ledger | Deadline/schedule checks, SHA-256, SQLite immutability, idempotent scores and feedback | External timestamp publication; automatic model promotion intentionally skipped |
 | Funds / EV | Policy validation, guarded fund/control creation schema | Betting, payouts, settlement, fund Monte Carlo and EV unavailable |
@@ -153,6 +153,67 @@ selected configuration is then refit on all eligible past results. Repeated roll
 evaluation is exploratory, not an untouched independent holdout or a proven edge.
 Uniform selection is a valid outcome when alternatives do worse.
 
+### Pick-k ensemble and ticket portfolio
+
+Pick-k games (Power/Mega/Lotto) no longer use a single fixed window. `app/ensemble.py`
+builds six shrinkage estimators — uniform, frequency over 60/150/300 draws, and two
+exponential-recency series (half-life 80/250) — and mixes them with greedy ensemble
+selection (Caruana-style, shrinkage 0.35, at most six rounds) scored by categorical
+log loss. Two rules make the result trustworthy rather than merely different:
+
+- **No leakage.** Mixture weights are fitted on draws strictly before the target,
+  using at most the last 48 draws, and evaluation refits weights only on an earlier
+  prefix. Every candidate returns inclusion probabilities that sum to `pick_count`
+  and stay strictly positive, so the ledger and dashboard stay comparable.
+- **Uniform is allowed to win.** When nothing beats the theoretical distribution the
+  weights collapse to `{"uniform": 1.0}` and the dashboard says so. That is the
+  observed outcome on the currently stored history: measured over the last 120 draws
+  of each game, *every* frequency and recency component had higher log loss than
+  uniform (Power: +0.006 to +0.30; Mega: +0.009 to +0.18; Lotto: +0.008 to +0.22 per
+  draw). The previous fixed-window estimator shipped a vector that was worse than
+  uniform on Power (0.3463 vs 0.3446) and Mega (0.3947 vs 0.3927); the ensemble now
+  reverts to uniform instead of degrading calibration. A planted synthetic pattern is
+  still detected (weights move to the frequency component and the log-loss interval
+  sits below zero), which is what the test suite asserts.
+
+`app/tickets.py` additionally optimises the ticket **set**: greedy maximum coverage
+over draws simulated from the model's own probabilities, so overlapping tickets no
+longer waste coverage. Reported coverage is conditional on the model ("this set
+covers the model's simulated outcomes better than independent sampling"), never a
+win probability; match tiers are structural (`pick_count - 3`/`- 2`), not payouts.
+
+### Optional OpenAI-compatible advisor
+
+`app/llm.py` may add a **bounded** tilt from any OpenAI-compatible
+`/chat/completions` server (OpenAI, gateways, Ollama `/v1`, LM Studio, vLLM,
+LiteLLM). The statistical ensemble remains the base distribution: the advisor
+supplies `boost`/`suppress` scores in `[-1, 1]` plus a confidence, and the effective
+tilt is `confidence * OPENAI_MAX_TILT` (default 0.25) applied exponentially to the
+base vector before renormalisation. Therefore it can never replace or invert the
+model, and an advisor that is down, slow, or malformed leaves the prediction intact.
+
+Every lock records `advisor` (model, provider, confidence, boosts/suppresses,
+rationale, token usage, latency, request SHA-256), `tilt` (effective strength) and
+`base_probabilities`, so the statistical-only vector can be scored separately:
+`advisor_effect.logloss_gain` in the score tells you whether the nudge helped on that
+draw. One draw proves nothing; the ledger makes the aggregate measurable. Note that
+this is disabled unless `OPENAI_API_KEY` is set, plain HTTP is only accepted for
+loopback servers, and exactly one request (plus one fallback without
+`response_format` on HTTP 400) is made per lock — never a retry loop.
+
+```sh
+export OPENAI_API_KEY=sk-...
+export OPENAI_MODEL=gpt-4o-mini          # or any served model name
+export OPENAI_BASE_URL=http://127.0.0.1:11434/v1   # e.g. local Ollama
+export OPENAI_MAX_TILT=0.25              # 0 disables the effect entirely
+```
+
+`GET /api/games/{code}/advisor` reports status without the key.
+`POST /api/games/{code}/advisor/preview` (API key required) performs one dry run and
+returns the statistical vector, the tilted vector with per-number deltas, and the
+suggestion — useful before trusting anything. The dashboard shows whether the
+advisor is on, how its weight is bounded, and the measured advisor effect per draw.
+
 The dashboard shows training/error state, recent version lineage, candidate numbers,
 and a prize-group probability selector. Probabilities refer to one prize value,
 not ticket/pair win probability. Max 3D candidates target the first-prize group;
@@ -262,7 +323,8 @@ curl -X POST http://127.0.0.1:3399/api/import/csv \
 
 Public: `/api/health`, `/api/games`, `/api/games/{code}/draws?limit&before`,
 `/api/games/{code}/summary`, `/api/games/{code}/stats/frequency`, `/api/ledger`,
-`/api/jobs/{id}`, `/api/backtest/{job_id}`, `/api/models/{id}/feedback`, `/api/funds`.
+`/api/jobs/{id}`, `/api/backtest/{job_id}`, `/api/models/{id}/feedback`, `/api/funds`,
+`/api/games/{code}/advisor`.
 
 All writes and expensive computations require `X-API-Key`:
 
@@ -274,7 +336,11 @@ All writes and expensive computations require `X-API-Key`:
   Interactive report is limited to 2,000 draws to bound synchronous CPU work.
 - `POST /api/simulator/illusion`: `{"game":"power655"}`; random history frequency.
 - `POST /api/games/{code}/predict`: `target_draw_id`, timezone-aware `target_at`,
-  `method`, `count`; blocked for draft rules. Only unseen future IDs accepted.
+  `method` (`adaptive` default, or `uniform`/`bayesian`), `count`; blocked for draft
+  rules. Only unseen future IDs accepted.
+- `POST /api/games/{code}/advisor/preview`: one dry run of the OpenAI-compatible
+  advisor; returns statistical vector, tilted vector with deltas, and the raw
+  suggestion. Never writes to the ledger.
 - `POST /api/funds`: `game`, `method`, `initial_balance`, optional capped `policy`;
   disabled for draft rules/unknown payouts. Creates model/random/no_bet records
   only; no betting/settlement is implemented.

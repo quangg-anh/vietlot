@@ -9,11 +9,60 @@ from .analytics import DISCLAIMER, losses, probabilities, sample_tickets
 from .db import connect, encode
 from .etl import now, training_history, training_fingerprint
 from .games import game
-from . import digit_model
+from . import digit_model, ensemble, llm, tickets
 
 
 def digest(code, target, version, payload, locked):
     return hashlib.sha256(encode([code, target, version, payload, locked]).encode()).hexdigest()
+
+
+def frequency_window(rows, spec, window=300):
+    counts = [0] * spec["number_max"]
+    for row in rows[-window:]:
+        for number in row["main"]:
+            counts[number - 1] += 1
+    return [{"number": number, "count": count} for number, count in enumerate(counts, 1)]
+
+
+def prepare_adaptive(code, spec, target, target_draw_id, include_crawled):
+    """Resolve the adaptive model and the optional advisor before taking the write lock.
+
+    The advisor is a network call bounded by ``OPENAI_TIMEOUT``; running it inside
+    the ``BEGIN IMMEDIATE`` transaction would hold the write lock for the whole
+    request and block crawling, scoring and training.
+    """
+    policy = "verified_or_crawled" if include_crawled else "verified_only"
+    with connect() as connection:
+        rows = training_history(code, connection, include_crawled=include_crawled,
+                                before=min(target, datetime.now(timezone.utc)))
+        latest = connection.execute("SELECT max(draw_id) FROM draws WHERE game_code=?", (code,)).fetchone()[0]
+        if not rows or target_draw_id <= (latest or 0):
+            raise ValueError("Need eligible history and an unseen future draw ID")
+        hashed = training_fingerprint(rows, spec, ensemble.REVISION, policy)
+        saved = connection.execute(
+            "SELECT * FROM model_versions WHERE game_code=? AND json_extract(parameters,'$.automatic')=1 "
+            "AND json_extract(parameters,'$.training_hash')=? ORDER BY id DESC LIMIT 1", (code, hashed)).fetchone()
+    if saved:
+        parameters, version = json.loads(saved["parameters"]), saved["id"]
+    else:
+        # No stored version for exactly this data+config: fit now. This is never
+        # stale — the lookup key is the full training fingerprint — and it keeps
+        # prediction working before the background trainer has run.
+        parameters, version = ensemble.fit(rows, spec), None
+        parameters = dict(parameters) | {"automatic": True, "data_policy": policy,
+                                         "training_hash": hashed, "kind": "pick_k",
+                                         "training_count": len(rows),
+                                         "unverified_training_count": sum(not row["verified"] for row in rows)}
+    probability = list(parameters["probabilities"])
+    suggestion = llm.advise(code, spec, rows, probability, frequency_window(rows, spec))
+    advisor, tilt_report, tilted = None, None, probability
+    if suggestion:
+        tilted, tilt_report = ensemble.tilt(probability, suggestion["scores"],
+                                            suggestion["confidence"], suggestion["max_tilt"])
+        advisor = {key: value for key, value in suggestion.items() if key != "scores"}
+    return {"rows": rows, "hashed": hashed, "version": version, "parameters": parameters,
+            "probabilities": probability, "tilted": tilted, "advisor": advisor,
+            "tilt": tilt_report, "policy": policy}
 
 
 def lock(code, target_draw_id, target_at, method, count, once=False, include_crawled=False):
@@ -28,6 +77,17 @@ def lock(code, target_draw_id, target_at, method, count, once=False, include_cra
     local = target.astimezone(ZoneInfo(spec["timezone"]))
     if local.weekday() not in spec["weekdays"] or local.strftime("%H:%M") not in spec["slots"] or local.second or local.microsecond:
         raise ValueError("target_at does not match configured draw schedule")
+    prepared = None
+    if once:
+        # Idempotency first: a repeat request for an already locked draw must not
+        # fail just because the result has since arrived and the model advanced.
+        with connect() as connection:
+            existing = connection.execute("SELECT * FROM predictions WHERE game_code=? AND target_draw_id=? ORDER BY id DESC LIMIT 1", (code, target_draw_id)).fetchone()
+        if existing:
+            return {"id": existing["id"], "payload_hash": existing["payload_hash"],
+                    "payload": json.loads(existing["payload"]), "locked_at": existing["locked_at"], "disclaimer": DISCLAIMER}
+    if spec["kind"] == "pick_k" and method == "adaptive":
+        prepared = prepare_adaptive(code, spec, target, target_draw_id, include_crawled)
     with connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
         if once:
@@ -44,9 +104,26 @@ def lock(code, target_draw_id, target_at, method, count, once=False, include_cra
             raise ValueError("Training data must precede target")
         seed = secrets.randbits(53)
         version = None
-        if spec["kind"] == "digits":
-            if method not in ("bayesian", "uniform"):
-                raise ValueError("method must be uniform or bayesian")
+        if prepared is not None:
+            if training_fingerprint(rows, spec, ensemble.REVISION, prepared["policy"]) != prepared["hashed"]:
+                raise ValueError("Eligible history changed while the advisor was running; retry")
+            version = prepared["version"]
+            probability = prepared["tilted"]
+            chosen = tickets.portfolio(probability, spec, count, seed)
+            predicted = {"kind": "pick_k", "method": "adaptive", "tickets": chosen,
+                         "probabilities": probability, "model_revision": ensemble.REVISION,
+                         "ticket_strategy": "portfolio",
+                         "weights": prepared["parameters"].get("weights"),
+                         "coverage": tickets.coverage(probability, spec, chosen, seed + 1)}
+            if prepared["tilt"]:
+                predicted["base_probabilities"] = prepared["probabilities"]
+                predicted["tilt"] = prepared["tilt"]
+            if prepared["advisor"]:
+                predicted["advisor"] = prepared["advisor"]
+            parameters = dict(prepared["parameters"])
+        elif spec["kind"] == "digits":
+            if method not in ("bayesian", "uniform", "adaptive"):
+                raise ValueError("method must be uniform, bayesian or adaptive")
             policy = "verified_or_crawled" if include_crawled else "verified_only"
             hashed_data = training_fingerprint(rows, spec, digit_model.REVISION, policy)
             saved = connection.execute("SELECT * FROM model_versions WHERE game_code=? AND json_extract(parameters,'$.automatic')=1 AND json_extract(parameters,'$.training_hash')=? ORDER BY id DESC LIMIT 1", (code, hashed_data)).fetchone()
@@ -80,9 +157,10 @@ def lock(code, target_draw_id, target_at, method, count, once=False, include_cra
         if datetime.fromisoformat(locked) >= target:
             raise ValueError("Draw deadline passed")
         if version is None:
+            label = "digits_" + method if spec["kind"] == "digits" else ("adaptive_ensemble" if prepared is not None else method)
             version = connection.execute(
                 "INSERT INTO model_versions(game_code,method,trained_through_draw_id,parameters,created_at) VALUES(?,?,?,?,?)",
-                (code, "digits_" + method if spec["kind"] == "digits" else method, rows[-1]["draw_id"], encode(parameters), locked)).lastrowid
+                (code, label, rows[-1]["draw_id"], encode(parameters), locked)).lastrowid
         hashed = digest(code, target_draw_id, version, payload, locked)
         identity = connection.execute(
             "INSERT INTO predictions(game_code,target_draw_id,target_at,model_version_id,payload,payload_hash,locked_at) VALUES(?,?,?,?,?,?,?)",
@@ -154,6 +232,12 @@ def score_pending(code=None):
                     result["special_scope"] = "separate_number" if row["game_code"] == "lotto535" else "reference_only"
                     result["metric_scope"] = "main_number_matches; not_payouts"
                     result["baseline"] = losses(probabilities([], spec, "uniform"), actual)
+                    if payload.get("base_probabilities"):
+                        control = losses(payload["base_probabilities"], actual)
+                        result["advisor_effect"] = {
+                            "statistical_logloss": control["logloss"], "final_logloss": result["logloss"],
+                            "logloss_gain": control["logloss"] - result["logloss"],
+                            "interpretation": "duong = dieu chinh advisor co loi o ky nay; mot ky khong ket luan duoc gi"}
                 result["source_verified"] = bool(row["actual_verified"])
                 result["source_url"] = row["actual_source_url"]
                 result["data_policy"] = payload.get("data_policy", "verified_only")

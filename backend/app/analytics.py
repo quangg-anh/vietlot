@@ -4,14 +4,17 @@ from statistics import mean
 
 
 DISCLAIMER = "Nghien cuu xac suat, khong dam bao trung thuong hay loi nhuan."
-METHODS = {"uniform", "bayesian"}
+METHODS = {"uniform", "bayesian", "adaptive"}
 
 
 def probabilities(history, spec, method="bayesian"):
     if method not in METHODS:
-        raise ValueError("method must be uniform or bayesian")
+        raise ValueError("method must be uniform, bayesian or adaptive")
     if spec["kind"] != "pick_k":
         raise ValueError("Candidate models currently support pick_k games only")
+    if method == "adaptive":
+        from . import ensemble
+        return ensemble.estimate(list(history), spec)["probabilities"]
     size, count = spec["number_max"], spec["pick_count"]
     counts = [0] * size
     window = history[-300:]
@@ -76,6 +79,8 @@ def backtest(rows, spec, min_train=100, test_draws=100, method="bayesian", seed=
     generator = random.Random(seed)
     differences = [entry["hits"] - entry["baseline_hits"] for entry in per_draw]
     bootstrap = sorted(mean(generator.choices(differences, k=len(differences))) for _ in range(1000))
+    logloss_differences = [entry["logloss"] - entry["baseline_logloss"] for entry in per_draw]
+    logloss_bootstrap = sorted(mean(generator.choices(logloss_differences, k=len(logloss_differences))) for _ in range(1000))
     return {"method": method, "evaluated_draws": len(per_draw), "seed": seed,
             "mean_hits": mean(entry["hits"] for entry in per_draw),
             "baseline_mean_hits": mean(entry["baseline_hits"] for entry in per_draw),
@@ -85,6 +90,7 @@ def backtest(rows, spec, min_train=100, test_draws=100, method="bayesian", seed=
             "baseline_brier": mean(entry["baseline_brier"] for entry in per_draw),
             "logloss": mean(entry["logloss"] for entry in per_draw),
             "baseline_logloss": mean(entry["baseline_logloss"] for entry in per_draw),
+            "logloss_difference_ci95": [logloss_bootstrap[24], logloss_bootstrap[974]],
             "conclusion": "Chua du bang chung vuot baseline ngau nhien",
             "holdout": False, "exploratory": True,
             "limitations": "No untouched holdout or multiple-trial correction; CI is exploratory, not an edge claim.",

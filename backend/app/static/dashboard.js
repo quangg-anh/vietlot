@@ -92,12 +92,31 @@ function renderLearning(data) {
   if (status === "training" || status === "pending") container.append(node("p", "", "Đang học lại từ dữ liệu mới. Không thay đổi dự đoán đã lưu."));
   if (data.retraining_due && status !== "training" && status !== "failed") container.append(node("p", "", "Có dữ liệu hoặc cấu hình mới; chờ chu kỳ tự học lại tiếp theo."));
   if (!data.runner_enabled) container.append(node("p", "training-error", "Worker đang tắt: model không tự học lại cho đến khi bật worker."));
+  if (data.advisor && !data.advisor.enabled) container.append(node("p", "", "Advisor OpenAI-compatible chưa bật: chỉ dùng model thống kê. Đặt OPENAI_API_KEY để bật điều chỉnh có giới hạn."));
+  if (data.advisor?.enabled) container.append(node("p", "", `Advisor ${data.advisor.provider} · ${data.advisor.model} đang bật. Chỉ điều chỉnh tối đa ${percentFormat.format(data.advisor.max_tilt)} quanh model thống kê; không thay thế và không đảm bảo trúng.`));
   if (!data.model) return;
   const model = data.model;
-  const config = model.config?.name || "bayesian";
-  container.append(node("p", "", `Model v${model.id} · ${model.training_count} kỳ · cửa sổ ${model.window} kỳ · ${config}. Tự học lại khi dữ liệu đủ điều kiện thay đổi; kiểm tra mỗi phút.`));
-  if (data.kind === "digits") container.append(node("p", "", "Tách model từng nhóm giải; chọn lại giữa ngẫu nhiên, tần suất 60/300 kỳ và vị trí chữ số. Chỉ chọn bằng dữ liệu quá khứ; có thể giữ model ngẫu nhiên nếu model khác kém hơn."));
+  if (data.kind === "digits") {
+    const config = model.config?.name || "bayesian";
+    container.append(node("p", "", `Model v${model.id} · ${model.training_count} kỳ · cửa sổ ${model.window} kỳ · ${config}. Tự học lại khi dữ liệu đủ điều kiện thay đổi; kiểm tra mỗi phút.`));
+    container.append(node("p", "", "Tách model từng nhóm giải; chọn lại giữa ngẫu nhiên, tần suất 60/300 kỳ và vị trí chữ số. Chỉ chọn bằng dữ liệu quá khứ; có thể giữ model ngẫu nhiên nếu model khác kém hơn."));
+  } else {
+    const selection = model.selection || {};
+    const parts = Object.entries(model.weights || {})
+      .sort((left, right) => right[1] - left[1])
+      .map(([name, value]) => `${componentLabel(name)} ${percentFormat.format(value)}`);
+    container.append(node("p", "", `Model v${model.id} · ${model.training_count} kỳ · ensemble thích nghi (${selection.status === "selected" ? `chọn trên ${selection.evaluated_draws} kỳ gần nhất` : "chưa đủ dữ liệu, dùng ngẫu nhiên"}).`));
+    if (parts.length) container.append(node("p", "version-trail", `Trọng số trộn: ${parts.join(" · ")}.`));
+    const calibration = model.calibration;
+    if (calibration) container.append(node("p", "", `Hiệu chỉnh trên ${calibration.draws} kỳ: sai lệch kỳ vọng ${percentFormat.format(calibration.expected_calibration_error)} — thấp hơn tốt hơn.`));
+    const coverage = model.tickets_coverage;
+    if (coverage) container.append(node("p", "", `Bộ vé tối ưu độ phủ: ít nhất một vé đạt mốc ${coverage.tier}/${data.baseline?.pick_count || "?"} trong ${percentFormat.format(coverage.coverage)} mô phỏng theo chính model; ${coverage.distinct_numbers} số khác nhau. Đây là độ phủ theo model, không phải xác suất trúng.`));
+  }
   if (data.model_versions?.length) container.append(node("p", "version-trail", `Phiên bản gần đây: ${data.model_versions.slice(0, 5).map(version => `v${version.id} (${version.training_count} kỳ)`).join(" · ")}`));
+}
+
+function componentLabel(name) {
+  return ({uniform: "ngẫu nhiên", frequency_60: "tần suất 60", frequency_150: "tần suất 150", frequency_300: "tần suất 300", recency_80: "gần đây 80", recency_250: "gần đây 250"})[name] || name;
 }
 
 function renderDigitProbability(data) {
@@ -156,6 +175,13 @@ function renderPredictions(data) {
   element("prediction-footnote").textContent = data.forecast?.status === "waiting_previous_result"
     ? `Chưa khóa dự đoán: thiếu kết quả kỳ ${timeFormat.format(new Date(data.forecast.required_previous_at))}. Bản tham khảo không được chấm hồi tố.`
     : "Tự lưu trước giờ quay khi đủ kết quả kỳ trước; kết quả mới vào lần học lại tiếp theo. Không sửa dự đoán cũ.";
+  if (upcoming?.payload?.coverage) {
+    const coverage = upcoming.payload.coverage;
+    element("prediction-footnote").textContent += ` Bộ vé tối ưu độ phủ ${coverage.tier}/${data.baseline?.pick_count || "?"} theo mô phỏng model (${coverage.distinct_numbers} số khác nhau) — độ phủ theo model, không phải xác suất trúng.`;
+  }
+  if (upcoming?.payload?.advisor) {
+    element("prediction-footnote").textContent += ` Có điều chỉnh advisor (${upcoming.payload.advisor.model}, tin cậy ${percentFormat.format(upcoming.payload.advisor.confidence)}); vector gốc được lưu để đối chiếu.`;
+  }
 }
 
 function scoreLabel(score, index, width) {
@@ -164,6 +190,13 @@ function scoreLabel(score, index, width) {
     label += ` · ĐB ${score.special_hits[index] ? "1" : "0"} / 1`;
   }
   return label;
+}
+
+function advisorLabel(score) {
+  const effect = score?.advisor_effect;
+  if (!effect) return null;
+  const gain = effect.logloss_gain;
+  return `Advisor ${gain >= 0 ? "có lợi" : "bất lợi"} ${Math.abs(gain).toFixed(4)} log loss ở kỳ này`;
 }
 
 function renderHistory(data) {
@@ -202,6 +235,7 @@ function renderHistory(data) {
       const state = node("td");
       const pendingLabel = ({waiting_draw: "Chưa đến giờ quay", waiting_result: "Chờ kết quả", source_not_eligible: "Nguồn chưa đủ điều kiện", result_slot_mismatch: "Lỗi: kết quả lệch ngày/giờ", invalid_lock_time: "Lỗi: thời điểm khóa không hợp lệ", ledger_hash_mismatch: "Lỗi: hash dự đoán không khớp", invalid_prediction: "Lỗi: dữ liệu dự đoán", pending_scoring: "Chờ chấm điểm"})[prediction.scoring_status] || "Chờ kết quả";
       state.append(node("span", `data-label${prediction.score ? "" : " pending"}`, prediction.score ? (prediction.score.source_verified === false ? "Đã chấm · nguồn crawl" : "Đã đối chiếu") : pendingLabel));
+      if (advisorLabel(prediction.score)) state.append(node("span", "advisor-note", advisorLabel(prediction.score)));
       row.append(node("td", "draw-id", `#${prediction.target_draw_id} · bộ ${index + 1}`), node("td", "muted", timeFormat.format(new Date(prediction.locked_at))), numbers, node("td", "", prediction.score ? scoreLabel(prediction.score, index, data.baseline?.pick_count) : "—"), state);
       predictions.append(row);
     });
@@ -239,7 +273,7 @@ function renderProbability(data) {
     grid.append(cell);
   });
   const metrics = data.model?.metrics;
-  element("model-evaluation").textContent = metrics ? `Tự đánh giá walk-forward ${metrics.evaluated_draws} kỳ · Brier model ${metrics.brier.toFixed(4)} / ngẫu nhiên ${metrics.baseline_brier.toFixed(4)} (thấp hơn tốt hơn). Đánh giá thăm dò, chưa có holdout độc lập; không tự tuyên bố vượt ngẫu nhiên.` : "Tự đánh giá walk-forward khi có hơn 10 kỳ dữ liệu. Hiện chưa đủ dữ liệu đánh giá; không hiển thị tỷ lệ thắng giả.";
+  element("model-evaluation").textContent = metrics ? `Đánh giá cuốn chiếu ${metrics.evaluated_draws} kỳ · Log loss ${metrics.logloss.toFixed(4)} / ngẫu nhiên ${metrics.baseline_logloss.toFixed(4)} (thấp hơn tốt hơn) · khoảng tin cậy 95% chênh lệch [${metrics.logloss_difference_ci95.map(value => value.toFixed(4)).join("; ")}]. Trọng số ensemble chỉ chọn trên dữ liệu trước đoạn đánh giá; đây là đánh giá thăm dò, không phải holdout độc lập.${metrics.logloss_difference_ci95[1] < 0 ? " Khoảng tin cậy nằm dưới 0 trên đoạn này, nhưng vẫn chưa đủ để tuyên bố lợi thế." : " Chưa có bằng chứng vượt ngẫu nhiên."}` : "Tự đánh giá khi có hơn 10 kỳ dữ liệu. Hiện chưa đủ dữ liệu đánh giá; không hiển thị tỷ lệ thắng giả.";
 }
 
 function render(data) {
@@ -251,7 +285,7 @@ function render(data) {
   element("stat-total").textContent = numberFormat.format(data.counts.total);
   element("stat-verified").textContent = numberFormat.format(data.usable_count);
   element("stat-pending").textContent = "Tự nhận dữ liệu crawl · không duyệt tay";
-  element("stat-model").textContent = !data.supported ? "Chưa hỗ trợ" : data.training?.status === "failed" ? "Lỗi train" : data.training?.status === "training" ? "Đang học lại" : data.model ? (data.kind === "digits" ? "Model 3D" : "Bayesian") : !data.runner_enabled ? "Worker tắt" : data.usable_count ? "Chờ train" : "Chờ dữ liệu";
+  element("stat-model").textContent = !data.supported ? "Chưa hỗ trợ" : data.training?.status === "failed" ? "Lỗi train" : data.training?.status === "training" ? "Đang học lại" : data.model ? (data.kind === "digits" ? "Model 3D" : "Ensemble") : !data.runner_enabled ? "Worker tắt" : data.usable_count ? "Chờ train" : "Chờ dữ liệu";
   element("model-caption").textContent = !data.supported ? "Trò chơi chưa có model" : data.model ? `v${data.model.id} · ${data.model.training_count} kỳ train · ${timeFormat.format(new Date(data.model.created_at))}` : "Tự train sau khi Sync có kết quả";
   element("stat-next").textContent = data.next_at ? timeFormat.format(new Date(data.next_at)) : "Chưa hỗ trợ";
   element("next-caption").textContent = "Theo lịch cấu hình của trò chơi";

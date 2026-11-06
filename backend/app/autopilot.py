@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from .analytics import backtest, probabilities, sample_tickets
 from .db import connect, encode
 from .etl import now, unpack, training_history, training_fingerprint
-from . import digit_model
+from . import digit_model, ensemble, llm, tickets
 from .games import game, games
 from .ledger import SCORING_COLUMNS, lock, score_pending, scoring_blocker
 
@@ -56,7 +56,7 @@ def active_model(connection, code):
 
 
 def training_hash(rows, spec):
-    revision = digit_model.REVISION if spec["kind"] == "digits" else "pick-k-bayesian-v1"
+    revision = digit_model.REVISION if spec["kind"] == "digits" else ensemble.REVISION
     return training_fingerprint(rows, spec, revision)
 
 
@@ -88,12 +88,18 @@ def train_version(code):
         parameters = digit_model.train(rows, spec, seed)
         method = "digits_adaptive_bayesian"
     else:
-        probability = probabilities(rows, spec, "bayesian")
-        parameters = {"kind": "pick_k", "probabilities": probability,
-                      "metrics": backtest(rows, spec, min_train=10, test_draws=100) if len(rows) > 10 else None,
-                      "tickets": sample_tickets(probability, spec, 5, seed), "window": 300, "strength": 100,
-                      "algorithm_revision": "pick-k-bayesian-v1", "learning_policy": "refit_on_each_eligible_history_change"}
-        method = "bayesian"
+        fitted = ensemble.fit(rows, spec)
+        probability = fitted["probabilities"]
+        chosen = tickets.portfolio(probability, spec, 5, seed)
+        parameters = {"kind": "pick_k", "method": "adaptive", "probabilities": probability,
+                      "weights": fitted["weights"], "selection": fitted["selection"],
+                      "metrics": fitted["metrics"], "calibration": fitted["calibration"],
+                      "tickets": chosen,
+                      "tickets_coverage": tickets.coverage(probability, spec, chosen, seed + 1),
+                      "window": fitted["window"], "strength": fitted["strength"],
+                      "algorithm_revision": ensemble.REVISION,
+                      "learning_policy": "refit_and_reselect_on_each_eligible_history_change"}
+        method = "adaptive_ensemble"
     parameters.update(automatic=True, data_policy="verified_or_crawled", training_hash=hashed,
                       training_count=len(rows), unverified_training_count=sum(not row["verified"] for row in rows),
                       preview_only=True)
@@ -144,7 +150,7 @@ def predict_next(code):
         exists = connection.execute("SELECT 1 FROM predictions WHERE game_code=? AND target_draw_id=?", (code, target_id)).fetchone()
         latest = connection.execute("SELECT max(draw_id) FROM draws WHERE game_code=?", (code,)).fetchone()[0]
     if not exists and latest == rows[-1]["draw_id"]:
-        lock(code, target_id, target_at, "bayesian", 5, once=True, include_crawled=True)
+        lock(code, target_id, target_at, "adaptive", 5, once=True, include_crawled=True)
 
 def tick():
     try:
@@ -214,6 +220,7 @@ def workspace(code, before=None, limit=20):
     return {"game": code, "supported": supported, "crawl_enabled": spec.get("crawl_enabled", False),
             "kind": spec["kind"], "rules_verified": spec["rules_verified"], "counts": {"total": totals[0], "verified": totals[1], "pending": totals[0] - totals[1]},
             "usable_count": usable, "data_policy": "verified_or_crawled",
+            "advisor": llm.status(),
             "sync": dict(state) if state else None,
             "job": dict(active) | {"result": json.loads(active["result"]) if active["result"] else None} if active else None,
             "sync_source": {"name": spec.get("crawler", {}).get("latest_source", spec.get("crawler", {}).get("source")),
