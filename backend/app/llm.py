@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_TIMEOUT = 15.0
+DEFAULT_TIMEOUT = 45.0
 DEFAULT_MAX_TILT = 0.25
 MAX_RESPONSE_BYTES = 200_000
 MAX_RATIONALE = 400
@@ -56,23 +56,89 @@ def config():
     base = (os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE_URL).strip().rstrip("/")
     key = (os.getenv("OPENAI_API_KEY") or "").strip()
     enabled = (os.getenv("OPENAI_ENABLED") or "auto").strip().lower()
+    forced_off = enabled in ("0", "false", "off", "no")
     return {"base_url": base, "api_key": key,
             "model": (os.getenv("OPENAI_MODEL") or DEFAULT_MODEL).strip(),
-            "timeout": max(1.0, min(60.0, _env_float("OPENAI_TIMEOUT", DEFAULT_TIMEOUT))),
+            "timeout": max(1.0, min(180.0, _env_float("OPENAI_TIMEOUT", DEFAULT_TIMEOUT))),
             "max_tilt": max(0.0, min(1.0, _env_float("OPENAI_MAX_TILT", DEFAULT_MAX_TILT))),
             "temperature": _env_float("OPENAI_TEMPERATURE", 0.0),
             "json_mode": (os.getenv("OPENAI_JSON_MODE") or "1").strip() != "0",
-            "enabled": enabled not in ("0", "false", "off", "no") and bool(key)}
+            "enabled": not forced_off and bool(key),
+            "forced_off": forced_off,
+            "flag": enabled}
+
+
+def disabled_reason(settings):
+    """Why the advisor is off, so the dashboard never points at the wrong cause."""
+    if settings["forced_off"]:
+        return ("disabled_by_flag",
+                f"OPENAI_ENABLED={settings['flag']} đang tắt advisor. Xóa dòng đó "
+                "(hoặc đặt OPENAI_ENABLED=auto) rồi khởi động lại tiến trình.")
+    if not settings["api_key"]:
+        return ("missing_key",
+                "Chưa có OPENAI_API_KEY trong môi trường tiến trình. Đặt trong .env "
+                "rồi khởi động lại backend (đổi .env không tự nạp lại).")
+    return (None, None)
+
+
+def check(timeout=None, transport=None):
+    """Minimal round-trip to the configured endpoint: proves reachability + auth.
+
+    Sends one short prompt instead of a full advisory payload, so it answers
+    "why is the advisor not working" in seconds rather than half a minute.
+    """
+    settings = config()
+    settings["timeout"] = timeout or settings["timeout"]
+    result = {"enabled": settings["enabled"], "configured": bool(settings["api_key"]),
+              "base_url": settings["base_url"], "model": settings["model"],
+              "flag": settings["flag"], "disabled_reason": None,
+              "reachable": False, "latency_ms": None, "error": None}
+    reason, message = disabled_reason(settings)
+    result["disabled_reason"] = reason
+    if not settings["enabled"]:
+        result["error"] = message
+        return result
+    request = {"model": settings["model"],
+               "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
+               "temperature": 0, "max_tokens": 16}
+    started = time.monotonic()
+    try:
+        url = _endpoint(settings)
+        body = (transport or _post)(url, settings["api_key"], request, settings["timeout"])
+        # A connectivity probe must not require JSON: plain "ok" is a valid reply.
+        content = ""
+        choices = body.get("choices") if isinstance(body, dict) else None
+        if isinstance(choices, list) and choices:
+            raw_content = (choices[0].get("message") or {}).get("content")
+            if isinstance(raw_content, list):
+                raw_content = "".join(part.get("text", "") for part in raw_content if isinstance(part, dict))
+            content = (raw_content or "").strip()
+        result.update(reachable=True, latency_ms=int((time.monotonic() - started) * 1000),
+                      model_echoed=body.get("model") if isinstance(body, dict) else None,
+                      usage=body.get("usage") or {} if isinstance(body, dict) else {},
+                      reply=content[:120])
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            pass
+        result["error"] = f"HTTP {exc.code} {exc.reason} {detail}".strip()
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError) as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
 
 
 def status():
     """Dashboard-safe description: no key, no secrets."""
     settings = config()
     parts = urlsplit(settings["base_url"])
+    reason, message = disabled_reason(settings)
     return {"enabled": settings["enabled"], "configured": bool(settings["api_key"]),
             "provider": parts.hostname, "model": settings["model"],
             "max_tilt": settings["max_tilt"], "timeout": settings["timeout"],
-            "json_mode": settings["json_mode"],
+            "json_mode": settings["json_mode"], "flag": settings["flag"],
+            "disabled_reason": reason, "disabled_message": message,
             "effect": "bounded_tilt_on_ensemble_probabilities",
             "note": "CHI la dieu chinh nho, co gioi han; khong thay the model thong ke va khong dam bao trung thuong."}
 

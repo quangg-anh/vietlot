@@ -92,7 +92,7 @@ function renderLearning(data) {
   if (status === "training" || status === "pending") container.append(node("p", "", "Đang học lại từ dữ liệu mới. Không thay đổi dự đoán đã lưu."));
   if (data.retraining_due && status !== "training" && status !== "failed") container.append(node("p", "", "Có dữ liệu hoặc cấu hình mới; chờ chu kỳ tự học lại tiếp theo."));
   if (!data.runner_enabled) container.append(node("p", "training-error", "Worker đang tắt: model không tự học lại cho đến khi bật worker."));
-  if (data.advisor && !data.advisor.enabled) container.append(node("p", "", "Advisor OpenAI-compatible chưa bật: chỉ dùng model thống kê. Đặt OPENAI_API_KEY để bật điều chỉnh có giới hạn."));
+  if (data.advisor && !data.advisor.enabled) container.append(node("p", "training-error", data.advisor.disabled_message || "Advisor OpenAI-compatible chưa bật: chỉ dùng model thống kê."));
   if (data.advisor?.enabled) container.append(node("p", "", `Advisor ${data.advisor.provider} · ${data.advisor.model} đang bật. Chỉ điều chỉnh tối đa ${percentFormat.format(data.advisor.max_tilt)} quanh model thống kê; không thay thế và không đảm bảo trúng.`));
   if (!data.model) return;
   const model = data.model;

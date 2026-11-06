@@ -7,6 +7,7 @@ Not part of the unit suite (it binds sockets); run it manually:
 
 import json
 import os
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -86,22 +87,31 @@ def main():
     highest = max(int(row["draw_id"]) for row in rows)
 
     # 1. Advisor status endpoint over real HTTP.
+    #    Bind an ephemeral port: a fixed 3399 collides with any leftover dev server
+    #    and would silently assert against the wrong application build.
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    app_port = probe.getsockname()[1]
+    probe.close()
+    base = f"http://127.0.0.1:{app_port}"
     server_thread = threading.Thread(
-        target=uvicorn.run, args=(app,), kwargs={"host": "127.0.0.1", "port": 3399, "log_level": "warning"},
+        target=uvicorn.run, args=(app,), kwargs={"host": "127.0.0.1", "port": app_port, "log_level": "warning"},
         daemon=True)
     server_thread.start()
-    for _ in range(60):
+    for _ in range(80):
         try:
-            urllib.request.urlopen("http://127.0.0.1:3399/api/health", timeout=1)
+            urllib.request.urlopen(f"{base}/api/health", timeout=1)
             break
         except Exception:
             time.sleep(0.25)
+    else:
+        raise SystemExit(f"server never became ready on {base}")
 
     def get(path):
-        return json.loads(urllib.request.urlopen(f"http://127.0.0.1:3399{path}", timeout=20).read())
+        return json.loads(urllib.request.urlopen(f"{base}{path}", timeout=20).read())
 
     def post(path, key=None):
-        request = urllib.request.Request(f"http://127.0.0.1:3399{path}", data=b"", method="POST")
+        request = urllib.request.Request(f"{base}{path}", data=b"", method="POST")
         if key:
             request.add_header("X-API-Key", key)
         return json.loads(urllib.request.urlopen(request, timeout=90).read())
@@ -174,9 +184,9 @@ def main():
     print("scored ok: advisor logloss_gain", round(effect["logloss_gain"], 6), "·", effect["interpretation"][:40])
 
     # 6. Dashboard shell still serves and the new JS parses.
-    page = urllib.request.urlopen("http://127.0.0.1:3399/?code=power655", timeout=20).read().decode()
+    page = urllib.request.urlopen(f"{base}/?code=power655", timeout=20).read().decode()
     assert 'id="model-learning"' in page and 'id="prediction-footnote"' in page
-    script = urllib.request.urlopen("http://127.0.0.1:3399/static/dashboard.js", timeout=20).read().decode()
+    script = urllib.request.urlopen(f"{base}/static/dashboard.js", timeout=20).read().decode()
     assert "advisorLabel" in script and "componentLabel" in script
     print("dashboard ok: new renderers served")
     assert len(REQUESTS) >= 2, f"expected advisor calls, saw {len(REQUESTS)}"

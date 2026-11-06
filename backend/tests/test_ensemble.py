@@ -254,6 +254,68 @@ class AdvisorParsingTests(unittest.TestCase):
             self.assertIsNone(llm.advise("power655", self.spec, history(self.spec, 20),
                                          [0.1] * self.spec["number_max"], []))
 
+    def test_disabled_reason_distinguishes_flag_from_missing_key(self):
+        """A set key with OPENAI_ENABLED=0 must not be reported as 'no key'."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-present", "OPENAI_ENABLED": "0"}):
+            status = llm.status()
+        self.assertFalse(status["enabled"])
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["disabled_reason"], "disabled_by_flag")
+        self.assertIn("OPENAI_ENABLED=0", status["disabled_message"])
+        self.assertNotIn("Chưa có OPENAI_API_KEY", status["disabled_message"])
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "", "OPENAI_ENABLED": "auto"}):
+            missing = llm.status()
+        self.assertEqual(missing["disabled_reason"], "missing_key")
+        self.assertIn("OPENAI_API_KEY", missing["disabled_message"])
+
+    def test_enabled_flag_variants(self):
+        for flag, expected in (("auto", True), ("1", True), ("true", True),
+                               ("0", False), ("off", False), ("FALSE", False), ("no", False)):
+            with self.subTest(flag=flag), patch.dict(os.environ, {"OPENAI_API_KEY": "sk-x", "OPENAI_ENABLED": flag}):
+                self.assertEqual(llm.status()["enabled"], expected)
+
+    def test_check_reports_disabled_without_network(self):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-x", "OPENAI_ENABLED": "0"}):
+            result = llm.check()
+        self.assertFalse(result["reachable"])
+        self.assertEqual(result["disabled_reason"], "disabled_by_flag")
+        self.assertIn("OPENAI_ENABLED=0", result["error"])
+
+    def test_check_accepts_plain_text_reply(self):
+        """The probe must not demand JSON; a bare 'ok' proves reachability."""
+        def transport(url, key, body, timeout):
+            self.assertNotIn("response_format", body)
+            return {"model": "served-name", "usage": {"total_tokens": 9},
+                    "choices": [{"message": {"content": "ok"}}]}
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-x", "OPENAI_ENABLED": "auto"}):
+            result = llm.check(transport=transport)
+        self.assertTrue(result["reachable"])
+        self.assertEqual(result["reply"], "ok")
+        self.assertEqual(result["model_echoed"], "served-name")
+        self.assertIsNone(result["error"])
+
+    def test_check_surfaces_http_errors(self):
+        import urllib.error
+
+        def transport(url, key, body, timeout):
+            raise urllib.error.HTTPError(url, 401, "Unauthorized", {},
+                                         __import__("io").BytesIO(b'{"error":"bad key"}'))
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-x", "OPENAI_ENABLED": "auto"}):
+            result = llm.check(transport=transport)
+        self.assertFalse(result["reachable"])
+        self.assertIn("401", result["error"])
+        self.assertIn("bad key", result["error"])
+
+    def test_timeout_default_survives_a_slow_gateway(self):
+        """A full 55-number advisory can take ~30s; 15s silently killed every call."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-x"}, clear=False):
+            os.environ.pop("OPENAI_TIMEOUT", None)
+            self.assertGreaterEqual(llm.config()["timeout"], 30)
+        with patch.dict(os.environ, {"OPENAI_TIMEOUT": "600"}):
+            self.assertEqual(llm.config()["timeout"], 180.0)
+
     def test_explicit_disable_flag(self):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-x", "OPENAI_ENABLED": "0"}):
             self.assertFalse(llm.status()["enabled"])

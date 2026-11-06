@@ -329,6 +329,13 @@ def advisor_status(code: str):
             "disclaimer": DISCLAIMER}
 
 
+@app.post("/api/games/{code}/advisor/check", dependencies=[Depends(require_key)])
+def advisor_check(code: str):
+    """Diagnose the advisor: config reason + one short round-trip to the endpoint."""
+    game(code)
+    return {"check": llm.check(), "disclaimer": DISCLAIMER}
+
+
 @app.post("/api/games/{code}/advisor/preview", dependencies=[Depends(require_key)])
 def advisor_preview(code: str):
     """One dry run: statistical vector, advisor suggestion, and the tilted result."""
